@@ -117,3 +117,44 @@ a load twice to prove the loader returns to `READY`. Fuzz the decoder with
   byte-stream trait so the loader state machine can be exercised on the host
   against an in-memory pipe, or rely on QEMU (`-M raspi2`). Leaning: the trait,
   since it also keeps the state machine unit-testable.
+
+## `smp-secondary-bringup` — bring secondary cores to the core-0 entry state (0.2.0)
+
+**Crate:** `chainloader-loader`.
+**Breaking change:** No — extends the entry contract; single-core payloads are
+unaffected.
+**Depends on:** `loader-hardware-bringup`.
+
+### Motivation
+
+The entry contract (EL1, FP/SIMD, timers, `VBAR_EL1=0`, scrubbed registers, a
+stack) is established only on the boot core. Cores 1–3 stay in the firmware
+spin-table at EL2 in raw firmware state, so a payload that starts them gets an
+inconsistent machine: core 0 arrives clean, secondaries arrive at EL2 with FP
+trapped and nothing set up, forcing the payload to redo the EL1 drop and enable
+per core. The asymmetry is documented in `docs/ENTRY_CONTRACT.md`; this closes
+it.
+
+### Design
+
+Before handing off, core 0 releases each secondary from the firmware spin-table
+(write the address of a resident loader trampoline to `0xe0`/`0xe8`/`0xf0`, then
+`SEV`). Each secondary enters the trampoline at EL2, enables FP/SIMD, takes a
+per-core stack, drops to EL1 with the common config (`SCTLR_EL1`, `VBAR_EL1=0`,
+timer access), and parks in a loader-owned `WFE` loop reading a per-core release
+mailbox in resident loader memory. The loader advertises the mailbox to the
+payload; the payload starts a core by writing its entry address to the slot and
+`SEV`-ing, and the core branches there at EL1, matching core 0.
+
+### Open questions
+
+- **Release ABI.** Where to advertise the per-core mailbox — a spare handoff
+  register, or a small boot-info struct pointed to by one? Leaning boot-info, to
+  avoid burning registers on every single-core payload.
+- **Per-core stacks.** Fixed small stacks in the resident loader, or a slice of
+  the writable window per core? The window is the payload's; leaning small
+  resident loader stacks the payload switches away from.
+- **Secondary entry register state.** Same `x0`–`x4` handoff as core 0, or a
+  bare entry? Leaning bare — the payload already learned the layout from core 0.
+- **Firmware path.** Leave the firmware spin-table usable as well, or fully take
+  the cores over? Taking over is cleaner but makes the loader own all four cores.

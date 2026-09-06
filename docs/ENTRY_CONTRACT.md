@@ -94,6 +94,19 @@ statics are already zero at entry — it does **not** need to clear its own BSS.
 (`mem_len` is derived by the host from the ELF; a raw binary has
 `mem_len == image_len` and no zero-filled tail.)
 
+## Secondary cores (1–3)
+
+Everything above describes the **boot core (core 0)** only. Cores 1–3 never enter
+the loader: the firmware parks them in its own spin-table (`WFE` on the release
+slots `0xe0`/`0xe8`/`0xf0`) at **EL2**, in raw firmware state — no EL1 drop, no
+FP/SIMD enable, no `VBAR`, no stack, registers unscrubbed. A payload that starts
+a secondary via the spin-table therefore receives it at EL2 and must establish
+that core's state itself (drop to EL1, enable FP/SIMD, install vectors, …).
+
+Bringing secondaries up in the same state as core 0 requires the loader to take
+them over from the firmware stub and own their release path; that is planned
+(`../PLANNED.md`), not yet implemented.
+
 ## What the loader does *not* do
 
 - It does not enable or configure the MMU.
