@@ -134,6 +134,7 @@ pub struct Decoder {
 
 impl Decoder {
     /// Creates a decoder ready to scan for the start of a frame.
+    #[inline]
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -151,12 +152,14 @@ impl Decoder {
     ///
     /// Only meaningful immediately after [`push`](Self::push) returned
     /// [`Decoded::Frame`], and only until the next `push`.
+    #[inline(always)]
     #[must_use]
     pub fn payload(&self) -> &[u8] {
         &self.buf[FIXED_LEN..FIXED_LEN + self.len]
     }
 
     /// Discards any in-progress frame and returns to scanning for a magic.
+    #[inline]
     pub fn reset(&mut self) {
         self.phase = Phase::Sync0;
         self.fixed_n = 0;
@@ -164,6 +167,7 @@ impl Decoder {
     }
 
     /// Feeds one byte to the decoder.
+    #[inline]
     pub fn push(&mut self, b: u8) -> Decoded {
         match self.phase {
             Phase::Sync0 => {
@@ -189,6 +193,7 @@ impl Decoder {
     }
 
     /// Collects a CRC-covered header byte; parses the header once all four are in.
+    #[inline]
     fn push_fixed(&mut self, b: u8) -> Decoded {
         self.buf[self.fixed_n] = b;
         self.fixed_n += 1;
@@ -221,6 +226,7 @@ impl Decoder {
     }
 
     /// Collects payload + trailer bytes; validates the CRC once the body is full.
+    #[inline]
     fn push_body(&mut self, b: u8) -> Decoded {
         self.buf[FIXED_LEN + self.body_got] = b;
         self.body_got += 1;
@@ -252,6 +258,7 @@ impl Decoder {
 }
 
 impl Default for Decoder {
+    #[inline]
     fn default() -> Self {
         Self::new()
     }

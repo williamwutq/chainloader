@@ -44,6 +44,7 @@ pub const TRAILER_LEN: usize = 4;
 pub const MAX_FRAME: usize = HEADER_LEN + MAX_PAYLOAD + TRAILER_LEN;
 
 /// Total on-wire length of a frame carrying `payload_len` payload bytes.
+#[inline(always)]
 #[must_use]
 pub const fn frame_len(payload_len: usize) -> usize {
     HEADER_LEN + payload_len + TRAILER_LEN
@@ -77,6 +78,7 @@ pub enum FrameType {
 
 impl FrameType {
     /// Returns the [`FrameType`] for a raw type byte, or `None` if unrecognized.
+    #[inline]
     #[must_use]
     pub const fn from_u8(value: u8) -> Option<Self> {
         match value {
@@ -92,6 +94,7 @@ impl FrameType {
     }
 
     /// The raw type byte for this frame type.
+    #[inline(always)]
     #[must_use]
     pub const fn as_u8(self) -> u8 {
         self as u8
@@ -129,6 +132,7 @@ impl std::error::Error for EncodeError {}
 /// Returns [`EncodeError::PayloadTooLarge`] if `payload` exceeds
 /// [`MAX_PAYLOAD`], or [`EncodeError::BufferTooSmall`] if `out` cannot hold the
 /// frame.
+#[inline]
 pub fn encode_frame<'a>(
     ty: FrameType,
     payload: &[u8],

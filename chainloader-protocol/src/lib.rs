@@ -47,6 +47,7 @@ pub use frame::{
 pub use message::{Ack, DataFrame, ErrorCode, ErrorMsg, Hello, ImageHeader, MsgError, Ready};
 
 /// Returns the version of this crate, as recorded in `Cargo.toml`.
+#[inline]
 #[must_use]
 pub const fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")

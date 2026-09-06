@@ -53,6 +53,7 @@ impl core::fmt::Display for MsgError {
 impl std::error::Error for MsgError {}
 
 /// Checks that `bytes` holds at least `need` bytes.
+#[inline(always)]
 const fn require(len: usize, need: usize) -> Result<(), MsgError> {
     if len < need {
         Err(MsgError::Truncated {
@@ -65,12 +66,15 @@ const fn require(len: usize, need: usize) -> Result<(), MsgError> {
 }
 
 // Small little-endian readers. Callers guarantee the slice is long enough.
+#[inline(always)]
 fn rd_u16(b: &[u8], off: usize) -> u16 {
     u16::from_le_bytes([b[off], b[off + 1]])
 }
+#[inline(always)]
 fn rd_u32(b: &[u8], off: usize) -> u32 {
     u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
 }
+#[inline(always)]
 fn rd_u64(b: &[u8], off: usize) -> u64 {
     u64::from_le_bytes([
         b[off],
@@ -96,6 +100,7 @@ impl Hello {
     pub const LEN: usize = 4;
 
     /// Serializes to its fixed little-endian byte layout.
+    #[inline]
     #[must_use]
     pub fn to_bytes(&self) -> [u8; Self::LEN] {
         self.host_version.to_le_bytes()
@@ -106,6 +111,7 @@ impl Hello {
     /// # Errors
     ///
     /// [`MsgError::Truncated`] if fewer than [`LEN`](Self::LEN) bytes are given.
+    #[inline]
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, MsgError> {
         require(bytes.len(), Self::LEN)?;
         Ok(Self {
@@ -136,6 +142,7 @@ impl Ready {
     pub const LEN: usize = 32;
 
     /// Serializes to its fixed little-endian byte layout.
+    #[inline]
     #[must_use]
     pub fn to_bytes(&self) -> [u8; Self::LEN] {
         let mut out = [0u8; Self::LEN];
@@ -155,6 +162,7 @@ impl Ready {
     /// # Errors
     ///
     /// [`MsgError::Truncated`] if fewer than [`LEN`](Self::LEN) bytes are given.
+    #[inline]
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, MsgError> {
         require(bytes.len(), Self::LEN)?;
         Ok(Self {
@@ -188,6 +196,7 @@ impl ImageHeader {
     pub const LEN: usize = 24;
 
     /// Serializes to its fixed little-endian byte layout.
+    #[inline]
     #[must_use]
     pub fn to_bytes(&self) -> [u8; Self::LEN] {
         let mut out = [0u8; Self::LEN];
@@ -204,6 +213,7 @@ impl ImageHeader {
     /// # Errors
     ///
     /// [`MsgError::Truncated`] if fewer than [`LEN`](Self::LEN) bytes are given.
+    #[inline]
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, MsgError> {
         require(bytes.len(), Self::LEN)?;
         Ok(Self {
@@ -228,6 +238,7 @@ impl Ack {
     pub const LEN: usize = 4;
 
     /// Serializes to its fixed little-endian byte layout.
+    #[inline]
     #[must_use]
     pub fn to_bytes(&self) -> [u8; Self::LEN] {
         self.next_offset.to_le_bytes()
@@ -238,6 +249,7 @@ impl Ack {
     /// # Errors
     ///
     /// [`MsgError::Truncated`] if fewer than [`LEN`](Self::LEN) bytes are given.
+    #[inline]
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, MsgError> {
         require(bytes.len(), Self::LEN)?;
         Ok(Self {
@@ -282,12 +294,14 @@ pub enum ErrorCode {
 
 impl ErrorCode {
     /// The wire value for this code.
+    #[inline(always)]
     #[must_use]
     pub const fn as_u16(self) -> u16 {
         self as u16
     }
 
     /// The [`ErrorCode`] for a raw wire value, or `None` if unrecognized.
+    #[inline]
     #[must_use]
     pub const fn from_u16(value: u16) -> Option<Self> {
         match value {
@@ -342,6 +356,7 @@ impl ErrorMsg {
     pub const LEN: usize = 6;
 
     /// Builds an error message from a known [`ErrorCode`].
+    #[inline]
     #[must_use]
     pub fn new(code: ErrorCode, detail: u32) -> Self {
         Self {
@@ -351,12 +366,14 @@ impl ErrorMsg {
     }
 
     /// Returns the typed [`ErrorCode`] if `code` is recognized.
+    #[inline]
     #[must_use]
     pub fn known_code(&self) -> Option<ErrorCode> {
         ErrorCode::from_u16(self.code)
     }
 
     /// Serializes to its fixed little-endian byte layout.
+    #[inline]
     #[must_use]
     pub fn to_bytes(&self) -> [u8; Self::LEN] {
         let mut out = [0u8; Self::LEN];
@@ -370,6 +387,7 @@ impl ErrorMsg {
     /// # Errors
     ///
     /// [`MsgError::Truncated`] if fewer than [`LEN`](Self::LEN) bytes are given.
+    #[inline]
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, MsgError> {
         require(bytes.len(), Self::LEN)?;
         Ok(Self {
@@ -397,6 +415,7 @@ impl<'a> DataFrame<'a> {
     pub const HEADER: usize = 4;
 
     /// On-wire payload length: [`HEADER`](Self::HEADER) plus the chunk.
+    #[inline(always)]
     #[must_use]
     pub fn encoded_len(&self) -> usize {
         Self::HEADER + self.chunk.len()
@@ -407,6 +426,7 @@ impl<'a> DataFrame<'a> {
     /// # Errors
     ///
     /// [`MsgError::Truncated`] if `out` is smaller than [`encoded_len`](Self::encoded_len).
+    #[inline]
     pub fn encode(&self, out: &mut [u8]) -> Result<usize, MsgError> {
         let need = self.encoded_len();
         require(out.len(), need)?;
@@ -420,6 +440,7 @@ impl<'a> DataFrame<'a> {
     /// # Errors
     ///
     /// [`MsgError::Truncated`] if `bytes` is shorter than [`HEADER`](Self::HEADER).
+    #[inline]
     pub fn decode(bytes: &'a [u8]) -> Result<Self, MsgError> {
         require(bytes.len(), Self::HEADER)?;
         Ok(Self {

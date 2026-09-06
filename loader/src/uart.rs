@@ -92,6 +92,7 @@ impl Uart {
     }
 
     /// Sends one byte, blocking while the transmit FIFO is full.
+    #[inline]
     pub fn put_byte(&self, byte: u8) {
         // SAFETY: FR and DR are valid, fixed peripheral registers.
         unsafe {
@@ -103,6 +104,7 @@ impl Uart {
     }
 
     /// Receives one byte, blocking while the receive FIFO is empty.
+    #[inline]
     pub fn get_byte(&self) -> u8 {
         // SAFETY: FR and DR are valid, fixed peripheral registers.
         unsafe {

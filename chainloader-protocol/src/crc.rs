@@ -43,12 +43,14 @@ pub struct Crc32 {
 
 impl Crc32 {
     /// Creates an accumulator primed with the standard initial value.
+    #[inline]
     #[must_use]
     pub const fn new() -> Self {
         Self { state: 0xFFFF_FFFF }
     }
 
     /// Folds `bytes` into the running CRC.
+    #[inline]
     pub fn update(&mut self, bytes: &[u8]) {
         let mut state = self.state;
         for &b in bytes {
@@ -59,6 +61,7 @@ impl Crc32 {
     }
 
     /// Consumes the accumulator and returns the final CRC-32 value.
+    #[inline]
     #[must_use]
     pub const fn finalize(self) -> u32 {
         self.state ^ 0xFFFF_FFFF
@@ -66,12 +69,14 @@ impl Crc32 {
 }
 
 impl Default for Crc32 {
+    #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
 /// Computes the CRC-32 of `data` in one call.
+#[inline]
 #[must_use]
 pub fn crc32(data: &[u8]) -> u32 {
     let mut c = Crc32::new();
