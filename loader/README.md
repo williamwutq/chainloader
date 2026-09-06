@@ -26,9 +26,10 @@ rust-objcopy -O binary \
   target/aarch64-unknown-none/release/chainloader kernel8.img
 ```
 
-Copy `kernel8.img` to the SD card's boot partition once. With `arm_64bit=1`,
-`enable_uart=1`, and `init_uart_clock=48000000` in `config.txt`, the firmware
-loads it to `0x80000` and enters on core 0.
+Copy `kernel8.img` to the SD card's boot partition once. With `arm_64bit=1` and
+`enable_uart=1` in `config.txt`, the firmware loads it to `0x80000` and enters
+on core 0. The loader pins the UART reference clock itself via the VideoCore
+mailbox, so no `init_uart_clock` setting is required — a stock card works.
 
 ## Memory map
 

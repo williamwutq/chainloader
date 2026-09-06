@@ -51,12 +51,11 @@ be settled off-hardware:
 - **Cache maintenance while MMU off.** Confirm on hardware whether firmware
   leaves caches on; the `IC IALLU` + `DSB`/`ISB` sequence is written to be safe
   either way, but this needs measuring, not assuming.
-- **Baud clock.** The loader currently assumes `init_uart_clock=48000000` in
-  `config.txt` (`IBRD=26`, `FBRD=3`), a verified-correct pairing but an external
-  dependency. The bztsrc raspi3 tutorial instead sets the UART clock to a known
-  rate via the mailbox property interface (`MBOX_TAG_SETCLKRATE`), making baud
-  independent of `config.txt`. Adopt the mailbox approach so a stock SD card
-  works — strongest single robustness win found during research.
+- **Baud clock — resolved, needs hardware confirmation.** The loader pins the
+  UART clock to 4 MHz via the mailbox (`src/mailbox.rs`, `MBOX_TAG_SETCLKRATE`)
+  and uses `IBRD=2`, `FBRD=0xB`, matching the bztsrc reference, so no
+  `init_uart_clock` setting is needed. What remains is confirming on hardware
+  that the mailbox exchange succeeds and the banner is legible at 115200.
 
 ## `cargo-pi-load` — host transport (0.1.0)
 

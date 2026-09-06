@@ -1,13 +1,15 @@
 //! Minimal PL011 (UART0) driver for the Raspberry Pi 2 (BCM2836).
 //!
 //! Register offsets and the GPIO14/15 ALT0 routing follow the BCM2835/2836
-//! peripheral manual. Baud constants assume the firmware's UART reference clock
-//! is 48 MHz — set `init_uart_clock=48000000` (and `enable_uart=1`) in
-//! `config.txt`, or adjust [`IBRD_115200`]/[`FBRD_115200`] to match a different
-//! clock. This has been written against the datasheet but not yet validated on
-//! hardware; that is the phase-2 milestone in `../PLANNED.md`.
+//! peripheral manual. Rather than assume `config.txt` sets a particular UART
+//! reference clock, [`Uart::init`] pins the clock to a known rate via the
+//! VideoCore mailbox (see [`crate::mailbox`]) and computes the baud divisors for
+//! it, so a stock SD card works. Written against the datasheet and the bztsrc
+//! reference; not yet validated on hardware (see `../PLANNED.md`).
 
 use core::ptr::{read_volatile, write_volatile};
+
+use crate::mailbox;
 
 /// Peripheral base for the BCM2836 (Pi 2). The Pi 1 base is `0x2000_0000`.
 const PERIPHERAL_BASE: usize = 0x3F00_0000;
@@ -37,12 +39,14 @@ const CR_UARTEN: u32 = 1; // bit 0
 const CR_TXE: u32 = 1 << 8;
 const CR_RXE: u32 = 1 << 9;
 
-/// Integer baud divisor for 115200 baud at a 48 MHz UART clock.
+/// UART reference clock the loader pins via the mailbox, in Hz.
+const UART_CLOCK_HZ: u32 = 4_000_000;
+/// Integer baud divisor for 115200 baud at [`UART_CLOCK_HZ`].
 ///
-/// `48_000_000 / (16 * 115_200) = 26.0417`.
-const IBRD_115200: u32 = 26;
-/// Fractional baud divisor: `round(0.0417 * 64) = 3`.
-const FBRD_115200: u32 = 3;
+/// `4_000_000 / (16 * 115_200) = 2.170`.
+const IBRD_115200: u32 = 2;
+/// Fractional baud divisor: `round(0.170 * 64) = 11` (`0xB`).
+const FBRD_115200: u32 = 0xB;
 
 /// A zero-sized handle to the single PL011 peripheral.
 pub struct Uart;
@@ -56,6 +60,11 @@ impl Uart {
     /// It performs raw MMIO writes to fixed peripheral addresses.
     pub unsafe fn init(&self) {
         unsafe {
+            // Pin the UART reference clock so the divisors below are correct
+            // regardless of `config.txt`. Best effort: if the mailbox call
+            // fails, fall through with whatever clock the firmware set.
+            let _ = mailbox::set_uart_clock(UART_CLOCK_HZ);
+
             // Disable the UART before reconfiguring.
             write_volatile(UART_CR as *mut u32, 0);
 

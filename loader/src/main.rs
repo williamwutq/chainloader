@@ -15,6 +15,7 @@
 #![no_std]
 #![no_main]
 
+mod mailbox;
 mod receive;
 mod uart;
 
