@@ -23,39 +23,11 @@ State `No` explicitly rather than omitting a metadata field.
 
 ---
 
-## `messages` — typed payload structs (0.1.0)
-
-**Crate:** `chainloader-protocol`.
-**Breaking change:** No — additive.
-**Depends on:** nothing (pairs with the shipped `Decoder`).
-
-### Motivation
-
-`docs/PROTOCOL.md` fixes the byte layout of `READY`, `HEADER`, `DATA`, `ACK`,
-and `ERROR`, but callers currently index raw slices. That duplicates the layout
-on both sides and invites drift between loader and host.
-
-### Design
-
-One `#[repr(C)]`-free plain struct per payload with a `const LEN`, an
-`encode(&self, out: &mut [u8])`, and a `decode(bytes: &[u8]) -> Result<Self,
-MsgError>`, all little-endian via `to_le_bytes`/`from_le_bytes`. `DATA` stays a
-thin `{ offset, &[u8] }` view rather than a struct, since its chunk is
-borrowed. `ErrorCode` becomes an enum with `from_u16`/`as_u16` and `Display`.
-
-### Open questions
-
-- **Serde.** Whether to offer optional `serde` impls behind a feature for the
-  host, or keep hand-rolled LE only. Leaning hand-rolled: the layouts are tiny
-  and fixed, and it keeps the loader's dependency set empty.
-- **`DATA` as a struct.** Whether a borrowing view is worth the asymmetry with
-  the other payloads, versus copying the chunk (which the loader cannot afford).
-
 ## `loader-receive` — receive, validate, and jump (0.1.0)
 
 **Crate:** `chainloader-loader`.
 **Breaking change:** No — the loader has no public API.
-**Depends on:** `decoder`, `messages`.
+**Depends on:** the shipped `Decoder` and message structs.
 
 ### Motivation
 
@@ -97,7 +69,7 @@ constants, so the loader can never overwrite itself.
 
 **Crate:** `cargo-pi`.
 **Breaking change:** No — new subcommand behavior.
-**Depends on:** `decoder`, `messages`.
+**Depends on:** the shipped `Decoder` and message structs.
 
 ### Motivation
 

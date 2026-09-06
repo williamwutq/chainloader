@@ -31,8 +31,9 @@ See [`../docs/PROTOCOL.md`](../docs/PROTOCOL.md) for the full handshake and
 ## Status
 
 Implemented: `crc` (CRC-32/ISO-HDLC, one-shot and streaming), `frame`
-(`FrameType`, `encode_frame`, size helpers), and `decoder` (the streaming,
-resyncing `Decoder`). Next up (`../PLANNED.md`): the typed payload structs.
+(`FrameType`, `encode_frame`, size helpers), `decoder` (the streaming, resyncing
+`Decoder`), and `message` (typed payload structs). The wire format is complete;
+next up (`../PLANNED.md`) is wiring it into the loader and host state machines.
 
 ## License
 
