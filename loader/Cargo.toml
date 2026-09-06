@@ -1,0 +1,43 @@
+# Standalone package, excluded from the root workspace: it only builds for
+# `aarch64-unknown-none` (pinned in .cargo/config.toml), so `workspace = true`
+# inheritance is unavailable and every field is inlined here.
+[package]
+name = "chainloader-loader"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["William Wu <williamwutq@gmail.com>", "Claude <claude@anthropic.com>"]
+license = "MIT"
+repository = "https://github.com/williamwutq/chainloader"
+description = "Bare-metal AArch64 UART chainloader for the Raspberry Pi 2 (Pi-side loader)"
+readme = "README.md"
+publish = false
+
+# The ELF this produces is post-processed into `kernel8.img` (see README).
+[[bin]]
+name = "chainloader"
+path = "src/main.rs"
+
+[dependencies]
+chainloader-protocol = { path = "../chainloader-protocol", default-features = false }
+
+# A bare-metal image cannot unwind, and a debug loader that is 10x larger than
+# release wastes SD churn, so both profiles abort and optimize.
+[profile.dev]
+panic = "abort"
+opt-level = 1
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = false
+
+[lints.rust]
+missing_docs = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unsafe_op_in_unsafe_fn = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
