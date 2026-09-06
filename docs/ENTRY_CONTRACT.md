@@ -5,6 +5,9 @@ An image built to these expectations runs identically whether it is the first
 or the tenth loaded in a session, without a power cycle. This is normative:
 independent loaders and payloads should both be able to rely on it.
 
+For the target state once the planned work lands (secondary cores, …), see
+[`ENTRY_GOAL.md`](ENTRY_GOAL.md) — aspirational, not yet guaranteed.
+
 ## Processor state at entry
 
 | Property        | Value at entry                                                                 |

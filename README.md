@@ -26,7 +26,8 @@ cargo pi load           # transfer it over UART and boot it
 | [`cargo-pi/`](cargo-pi/)                           | Host `cargo pi load` / `cargo pi console` subcommand.                         |
 | [`payload-example/`](payload-example/)             | Minimal AArch64 payload that validates the entry contract on hardware.        |
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md)             | Normative wire format and handshake.                                          |
-| [`docs/ENTRY_CONTRACT.md`](docs/ENTRY_CONTRACT.md) | AArch64 register/cache state at the jump.                                     |
+| [`docs/ENTRY_CONTRACT.md`](docs/ENTRY_CONTRACT.md) | AArch64 register/cache state at the jump (current, normative).                |
+| [`docs/ENTRY_GOAL.md`](docs/ENTRY_GOAL.md)         | Aspirational entry state to pre-plan kernels against (e.g. SMP).              |
 
 The workspace contains the two host-buildable crates (`chainloader-protocol`,
 `cargo-pi`). `loader` and `payload-example` are excluded and pin

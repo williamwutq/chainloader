@@ -151,7 +151,7 @@ payload; the payload starts a core by writing its entry address to the slot and
 ### Open questions
 
 - **Release ABI — resolved: a register.** Advertise the per-core mailbox base in
-  a handoff register (`x6` — the full register map is in `docs/ENTRY_GOAL.md`),
+  a handoff register (`x7` — the full register map is in `docs/ENTRY_GOAL.md`),
   not a boot-info struct. A struct is one more thing the payload must read back
   from memory and keep coherent once it enables caches; a register value sidesteps
   that entirely, and burning a register a single-core payload ignores is cheap.
@@ -192,7 +192,9 @@ EL2, where the handler resets `SP_EL2` to the loader stack, re-enters the receiv
 loop, and drops the new image to EL1 exactly like the first boot — the same entry
 contract. `HCR_EL2.HCD` is already 0, so `HVC` is enabled; the loader's
 code/data/stack are already protected from the payload. The `HVC` immediate
-(`ESR_EL2.ISS`) selects the service, leaving room to grow (`#0` = reload).
+(`ESR_EL2.ISS`) selects the service, leaving room to grow (`#0` = reload); any
+other immediate is invalid and simply `ERET`s straight back to the caller, so an
+accidental or forward-version `HVC` is a harmless no-op.
 
 ### Open questions
 
@@ -201,8 +203,10 @@ code/data/stack are already protected from the payload. The `HVC` immediate
   image's stores must reach the caller-visible view. Broadly clean+invalidate in
   the handler, or require the caller to clean/disable caches before `HVC`?
   Leaning: the handler does the maintenance, so the ABI stays "just `HVC #0`".
-- **Return-style services.** Reload never returns, so no EL1 state save is needed.
-  A later service that must return to the caller needs `ELR_EL2`/`SPSR_EL2`/
-  `SP_EL1` save-restore — decide when the first such service appears.
+- **Return-style services.** Reload never returns, but the invalid-immediate
+  no-op does, so even v1 needs a return path: the dispatcher must preserve any
+  caller GPR it touches (the `HVC` trap already saved `ELR_EL2`/`SPSR_EL2`, so
+  the tail is just `ERET`). A later service that returns *results* additionally
+  needs a defined status register — decide when the first such service appears.
 - **Multi-core.** If secondaries are running when a core reloads, they must be
   quiesced (re-parked) first. Interacts with `smp-secondary-bringup`.
