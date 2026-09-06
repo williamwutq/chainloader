@@ -23,7 +23,7 @@ every core enters the payload in the same state.
 | FP/SIMD         | Enabled (`CPACR_EL1.FPEN=0b11`); NEON usable.                                         |
 | Timers          | Counters readable at EL1; `CNTVOFF_EL2 = 0`; `CNTFRQ_EL0` valid †                     |
 | UART            | PL011 (UART0) up at 115200 8N1 on GPIO14/15 (ALT0); usable without re-init.           |
-| `SP`            | A valid, distinct per-core stack (`SP_EL1`) †                                         |
+| `SP`            | `SP_EL1` = `load_addr_max` (window top)                                               |
 | `PC`            | Core 0: `load_addr + entry_off`. Secondary: the address the payload released it to. † |
 | EL2 service     | Loader stays resident at EL2; reachable from EL1 via `HVC` (see below) †              |
 
@@ -73,6 +73,10 @@ register handoff (its own `x8 = N`).
 
 The mailbox is physical RAM; once the payload enables its MMU/caches it must map
 it non-cacheable or maintain it by hand (the standard spin-table caveat).
+
+Every core wakes on the same default `SP` (the window top), so a payload starting
+more than one secondary must get each off it before the next runs — release them
+serially, or have each switch to its own stack immediately on entry.
 
 ## Loader service (EL2)
 

@@ -141,31 +141,24 @@ it.
 
 Before handing off, core 0 releases each secondary from the firmware spin-table
 (write the address of a resident loader trampoline to `0xe0`/`0xe8`/`0xf0`, then
-`SEV`). Each secondary enters the trampoline at EL2, enables FP/SIMD, takes a
-per-core stack, drops to EL1 with the common config (`SCTLR_EL1`, `VBAR_EL1=0`,
-timer access), and parks in a loader-owned `WFE` loop reading a per-core release
-mailbox in resident loader memory. The loader advertises the mailbox to the
-payload; the payload starts a core by writing its entry address to the slot and
-`SEV`-ing, and the core branches there at EL1, matching core 0.
+`SEV`). Each secondary enters the trampoline at EL2, enables FP/SIMD, drops to EL1
+with the common config (`SCTLR_EL1`, `VBAR_EL1=0`, timer access), and parks in a
+loader-owned `WFE` loop polling a per-core release mailbox in resident loader
+memory.
+
+The mailbox base is handed to the payload in a register (`x7`), not a boot-info
+struct — a register carries no coherency burden once the payload enables caches
+(the mailbox memory still needs the usual spin-table handling, but that is
+inherent to any release path). To start a core, the payload writes its EL1 entry
+to the core's slot and `SEV`s; the core then adopts the *same* register handoff
+as core 0 — the identical `x0`–`x8` block, differing only in `x8` (`core_id`), so
+it learns the memory/DTB layout from registers without a RAM read — and branches
+there at EL1. It gets no distinct stack: like core 0 it wakes with `SP` at the
+window top, and the kernel owns per-core stacks (releasing serially or switching
+off the default at once). The full register map is in `docs/ENTRY_GOAL.md`.
 
 ### Open questions
 
-- **Release ABI — resolved: a register.** Advertise the per-core mailbox base in
-  a handoff register (`x7` — the full register map is in `docs/ENTRY_GOAL.md`),
-  not a boot-info struct. A struct is one more thing the payload must read back
-  from memory and keep coherent once it enables caches; a register value sidesteps
-  that entirely, and burning a register a single-core payload ignores is cheap.
-  (The mailbox memory itself still carries the usual spin-table coherency caveat —
-  map it device/non-cacheable or maintain it by hand — but that is inherent to any
-  release mechanism, register-advertised or not.)
-- **Secondary entry register state — resolved: full duplicate.** Each secondary
-  gets the *same* `x0`–`x8` block as core 0, differing only in `x8` (`core_id`),
-  so a core learns the memory/DTB layout from registers without touching shared
-  RAM (and without the cache concern that a RAM read carries). See
-  `docs/ENTRY_GOAL.md`.
-- **Per-core stacks.** Fixed small stacks in the resident loader, or a slice of
-  the writable window per core? The window is the payload's; leaning small
-  resident loader stacks the payload switches away from.
 - **Firmware path.** Leave the firmware spin-table usable as well, or fully take
   the cores over? Taking over is cleaner but makes the loader own all four cores.
 
@@ -194,7 +187,9 @@ contract. `HCR_EL2.HCD` is already 0, so `HVC` is enabled; the loader's
 code/data/stack are already protected from the payload. The `HVC` immediate
 (`ESR_EL2.ISS`) selects the service, leaving room to grow (`#0` = reload); any
 other immediate is invalid and simply `ERET`s straight back to the caller, so an
-accidental or forward-version `HVC` is a harmless no-op.
+accidental or forward-version `HVC` is a harmless no-op. That no-op return means
+even v1 needs a return path: the dispatcher must preserve any caller GPR it reads
+(the trap already banked `ELR_EL2`/`SPSR_EL2`, so the tail is a bare `ERET`).
 
 ### Open questions
 
@@ -203,10 +198,8 @@ accidental or forward-version `HVC` is a harmless no-op.
   image's stores must reach the caller-visible view. Broadly clean+invalidate in
   the handler, or require the caller to clean/disable caches before `HVC`?
   Leaning: the handler does the maintenance, so the ABI stays "just `HVC #0`".
-- **Return-style services.** Reload never returns, but the invalid-immediate
-  no-op does, so even v1 needs a return path: the dispatcher must preserve any
-  caller GPR it touches (the `HVC` trap already saved `ELR_EL2`/`SPSR_EL2`, so
-  the tail is just `ERET`). A later service that returns *results* additionally
-  needs a defined status register — decide when the first such service appears.
+- **Result-returning services.** A service that returns *results* to the caller
+  needs a defined status register (and possibly output registers) — settle the
+  convention when the first such service appears.
 - **Multi-core.** If secondaries are running when a core reloads, they must be
   quiesced (re-parked) first. Interacts with `smp-secondary-bringup`.
