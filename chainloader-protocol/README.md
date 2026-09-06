@@ -28,13 +28,6 @@ multi-byte fields are little-endian, matching the AArch64 default.
 See [`../docs/PROTOCOL.md`](../docs/PROTOCOL.md) for the full handshake and
 [`../docs/ENTRY_CONTRACT.md`](../docs/ENTRY_CONTRACT.md) for the jump contract.
 
-## Status
-
-Implemented: `crc` (CRC-32/ISO-HDLC, one-shot and streaming), `frame`
-(`FrameType`, `encode_frame`, size helpers), `decoder` (the streaming, resyncing
-`Decoder`), and `message` (typed payload structs). The wire format is complete;
-next up (`../PLANNED.md`) is wiring it into the loader and host state machines.
-
 ## License
 
 MIT — see [LICENSE](../LICENSE).

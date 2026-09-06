@@ -1,8 +1,8 @@
 # chainloader-loader
 
 The Pi-side loader: a `no_std`, bare-metal AArch64 program that boots from the
-SD card as `kernel8.img`, brings up the PL011 UART, and — once the receive path
-lands — accepts an AArch64 image over the wire, validates it, and jumps to it.
+SD card as `kernel8.img`, brings up the PL011 UART, accepts an AArch64 image
+over the wire, validates it, and jumps to it.
 
 It lives on the SD card permanently; payloads arrive over UART and are never
 written to the card. See [`../docs/PROTOCOL.md`](../docs/PROTOCOL.md) and

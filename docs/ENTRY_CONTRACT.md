@@ -62,10 +62,3 @@ still run to cover the case where firmware left caches enabled.
   subsequent `load` can reuse the still-resident loader.
 - Do not assume the caller returns; the loader parks (WFE) if control ever
   comes back, so returning is a dead end.
-
-## Status
-
-The contract is fixed here. The loader's cache-maintenance and jump
-implementation is the phase-4 milestone in [`../PLANNED.md`](../PLANNED.md); the
-boot/UART skeleton already establishes the single-core, EL-preserving,
-interrupts-masked starting state described above.

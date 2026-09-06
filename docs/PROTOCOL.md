@@ -127,10 +127,3 @@ HOST                          PI
 `PROTOCOL_VERSION`; a loader that receives a higher version replies
 `ERROR(BadVersion)` with `detail = supported_version` so the host can report a
 clear mismatch rather than hanging.
-
-## Status
-
-Framing and CRC are implemented in `chainloader-protocol`. The streaming
-decoder, the typed payload structs above, and the loader/host state machines
-are the next milestones — see [`../PLANNED.md`](../PLANNED.md). Field layouts
-here are the committed design those will implement.

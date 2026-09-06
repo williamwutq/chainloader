@@ -40,8 +40,8 @@ cache-maintenance sequence are written from the datasheet and need measuring.
 ### Design
 
 Flash `kernel8.img`, confirm the banner over a USB-UART adapter, then drive a
-real load with `cargo pi load` once that exists. The two decisions that cannot
-be settled off-hardware:
+real load with `cargo pi load`. The two decisions that cannot be settled
+off-hardware:
 
 ### Open questions
 
