@@ -1,6 +1,6 @@
 # chainloader
 
-A minimal development chainloader for the Raspberry Pi 2 (AArch64):
+A minimal development chainloader for the Raspberry Pi Zero 2 W and Pi 2/3 (AArch64):
 
 ```text
 Pi firmware → SD-resident AArch64 loader → UART → host binary → jump
@@ -33,7 +33,7 @@ from its own directory — see [`loader/README.md`](loader/README.md).
 
 ## Status
 
-Feature-complete off hardware, not yet validated on a real Pi 2. Implemented and
+Feature-complete off hardware, not yet validated on a real Pi Zero 2 W. Implemented and
 tested: the full `chainloader-protocol` codec (framing, CRC, streaming decoder,
 typed messages); the loader's boot, PL011 bring-up (clock set via mailbox), and
 receive/validate/jump path (links at `0x80000`); and `cargo pi load`/`console`

@@ -26,10 +26,17 @@ rust-objcopy -O binary \
   target/aarch64-unknown-none/release/chainloader kernel8.img
 ```
 
-Copy `kernel8.img` to the SD card's boot partition once. With `arm_64bit=1` and
-`enable_uart=1` in `config.txt`, the firmware loads it to `0x80000` and enters
-on core 0. The loader pins the UART reference clock itself via the VideoCore
-mailbox, so no `init_uart_clock` setting is required — a stock card works.
+Copy `kernel8.img` to the SD card's boot partition once. `config.txt` needs
+`arm_64bit=1` and `enable_uart=1`; on the Bluetooth-equipped boards (Zero 2 W,
+Pi 3) also add `dtoverlay=disable-bt`, which frees the PL011 UART from the
+on-board Bluetooth modem so it reaches the GPIO14/15 header pins (the Pi 2 has
+no Bluetooth and needs no overlay). The firmware then loads `kernel8.img` to
+`0x80000` and enters on core 0. The loader pins the UART reference clock itself
+via the VideoCore mailbox, so no `init_uart_clock` setting is required.
+
+The image is 64-bit, so the board must be AArch64-capable: the Zero 2 W, Pi 3,
+and Pi 2 rev 1.2 (BCM2837) all qualify; the original Pi 2 rev 1.1 (BCM2836,
+Cortex-A7) is 32-bit only and cannot run it.
 
 ## Memory map
 

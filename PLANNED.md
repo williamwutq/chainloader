@@ -11,7 +11,7 @@ from here.
 In place today (all off-hardware paths implemented and tested): the full
 `chainloader-protocol` codec; the loader's boot, UART, and receive/validate/jump
 path; and `cargo pi load`/`console` end to end. What remains is validation on a
-real Pi 2 and the polish items below. The wire format (`docs/PROTOCOL.md`) and
+real Pi Zero 2 W and the polish items below. The wire format (`docs/PROTOCOL.md`) and
 the jump contract (`docs/ENTRY_CONTRACT.md`) are the committed references.
 
 ---
@@ -24,7 +24,7 @@ State `No` explicitly rather than omitting a metadata field.
 
 ---
 
-## `loader-hardware-bringup` — validate the loader on a real Pi 2 (0.1.0)
+## `loader-hardware-bringup` — validate the loader on a real Pi Zero 2 W (0.1.0)
 
 **Crate:** `chainloader-loader`.
 **Breaking change:** No — the loader has no public API.
@@ -39,9 +39,11 @@ cache-maintenance sequence are written from the datasheet and need measuring.
 
 ### Design
 
-Flash `kernel8.img`, confirm the banner over a USB-UART adapter, then drive a
-real load with `cargo pi load`. The two decisions that cannot be settled
-off-hardware:
+Flash `kernel8.img` with `arm_64bit=1`, `enable_uart=1`, and
+`dtoverlay=disable-bt` in `config.txt` (the overlay frees PL011 from the Zero
+2 W's on-board Bluetooth so it reaches the GPIO14/15 header pins), confirm the
+banner over a USB-UART adapter, then drive a real load with `cargo pi load`. The
+decisions that cannot be settled off-hardware:
 
 ### Open questions
 
@@ -57,6 +59,11 @@ off-hardware:
   and uses `IBRD=2`, `FBRD=0xB`, matching the bztsrc reference, so no
   `init_uart_clock` setting is needed. What remains is confirming on hardware
   that the mailbox exchange succeeds and the banner is legible at 115200.
+- **Writable-window ceiling.** `WINDOW_MAX` is hardcoded to 448 MiB — the Zero
+  2 W's 512 MiB minus a default 64 MiB `gpu_mem` split. A `GET_ARM_MEMORY`
+  mailbox query at boot would set it from the firmware's actual ARM/GPU split
+  instead of assuming, and the mailbox path already exists for the UART clock.
+  Leaning: switch to the query once bring-up works.
 
 ## `console-raw-mode` — raw terminal for the post-load console (0.2.0)
 

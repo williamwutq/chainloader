@@ -25,9 +25,13 @@ use crate::uart::Uart;
 /// loader (at 0x80000), the firmware's low-memory structures, and the exception
 /// vector area, all of which must stay untouched.
 const WINDOW_MIN: u64 = 0x0020_0000;
-/// Exclusive high bound of the writable window: 768 MiB. The Pi 2 has 1 GiB of
-/// RAM; staying well under it is deliberately conservative.
-const WINDOW_MAX: u64 = 0x3000_0000;
+/// Exclusive high bound of the writable window: 448 MiB. This is the safe floor
+/// across the supported boards — set by the Pi Zero 2 W's 512 MiB minus a
+/// default 64 MiB `gpu_mem` split (leaving the ARM the bottom 448 MiB =
+/// 0x1C00_0000), and still valid, just conservative, on the 1 GiB Pi 2/3. A
+/// smaller `gpu_mem` raises the true ceiling; a `GET_ARM_MEMORY` mailbox query
+/// would size it per board instead of assuming the smallest.
+const WINDOW_MAX: u64 = 0x1C00_0000;
 /// Required alignment of a load address (advertised in `READY`).
 const REQUIRED_ALIGN: u64 = 0x800;
 /// Largest image the loader will accept: the whole window.

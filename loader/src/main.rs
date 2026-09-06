@@ -1,10 +1,9 @@
-//! Raspberry Pi 2 AArch64 UART chainloader — Pi-side loader.
+//! Raspberry Pi Zero 2 W / Pi 2 AArch64 UART chainloader — Pi-side loader.
 //!
-//! Boots from SD as `kernel8.img`, brings up the PL011 UART, and (once the
-//! protocol receive path lands) accepts an AArch64 image over the wire,
-//! validates it, and jumps to it. See `../docs/PROTOCOL.md` for the wire format
-//! and `../docs/ENTRY_CONTRACT.md` for the register/cache state established
-//! before the jump.
+//! Boots from SD as `kernel8.img`, brings up the PL011 UART, accepts an AArch64
+//! image over the wire, validates it, and jumps to it. See `../docs/PROTOCOL.md`
+//! for the wire format and `../docs/ENTRY_CONTRACT.md` for the register/cache
+//! state established before the jump.
 //!
 //! # Status
 //!

@@ -1,5 +1,5 @@
 //! Resolved configuration, merging three sources in increasing precedence:
-//! built-in Pi 2 defaults, `[package.metadata.pi]` in the payload's
+//! built-in Pi Zero 2 W / Pi 2 defaults, `[package.metadata.pi]` in the payload's
 //! `Cargo.toml`, and command-line flags.
 
 use serde::Deserialize;

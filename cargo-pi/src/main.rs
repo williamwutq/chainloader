@@ -9,7 +9,7 @@
 //! - `load` builds the payload, transfers it to the loader, and boots it.
 //! - `console` attaches to the serial port as a plain UART console.
 //!
-//! Defaults suit the Pi 2 dev loop and can be overridden per project in
+//! Defaults suit the Pi Zero 2 W / Pi 2 dev loop and can be overridden per project in
 //! `[package.metadata.pi]` or per invocation with flags. See the protocol in
 //! `../docs/PROTOCOL.md`.
 

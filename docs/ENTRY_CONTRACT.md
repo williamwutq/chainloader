@@ -10,7 +10,7 @@ independent loaders and payloads should both be able to rely on it.
 | Property        | Value at entry                                                                                                                        |
 |-----------------|---------------------------------------------------------------------------------------------------------------------------------------|
 | Core            | Core 0 only. Cores 1–3 remain parked in the firmware spin loop.                                                                       |
-| Exception level | The EL the firmware delivered to the loader (EL2 on the Pi 2 in 64-bit boot). The loader does **not** change EL.                      |
+| Exception level | The EL the firmware delivered to the loader (EL2 in the Pi's 64-bit boot). The loader does **not** change EL.                         |
 | MMU             | Off. No translation is enabled; all addresses are physical.                                                                           |
 | Caches          | As the firmware left them. The loader performs the maintenance below so the freshly written image is coherent with instruction fetch. |
 | `DAIF`          | All masked (D, A, I, F). The payload owns interrupt setup.                                                                            |
