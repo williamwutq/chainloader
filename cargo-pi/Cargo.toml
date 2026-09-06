@@ -1,0 +1,34 @@
+[package]
+name = "cargo-pi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Cargo subcommand to load AArch64 bare-metal images onto a Raspberry Pi over UART via the chainloader"
+readme = "README.md"
+keywords = ["raspberry-pi", "bootloader", "uart", "cargo-subcommand"]
+categories = ["command-line-utilities", "development-tools::cargo-plugins"]
+
+[package.metadata]
+changelog = "../CHANGELOG.md"
+publish = false
+
+# Installs as `cargo-pi`, which Cargo exposes as `cargo pi`.
+[[bin]]
+name = "cargo-pi"
+path = "src/main.rs"
+
+[dependencies]
+chainloader-protocol.workspace = true
+# The serial transport and Cargo-metadata/config parsing land with the `load`
+# and `console` implementations (see ../PLANNED.md). Kept dependency-free until
+# then so the subcommand builds without a network fetch.
+# serialport = "4"
+# serde = { version = "1", features = ["derive"] }
+# serde_json = "1"
+# toml = "0.8"
+
+[lints]
+workspace = true
