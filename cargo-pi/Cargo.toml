@@ -22,13 +22,12 @@ path = "src/main.rs"
 
 [dependencies]
 chainloader-protocol.workspace = true
-# The serial transport and Cargo-metadata/config parsing land with the `load`
-# and `console` implementations (see ../PLANNED.md). Kept dependency-free until
-# then so the subcommand builds without a network fetch.
-# serialport = "4"
-# serde = { version = "1", features = ["derive"] }
-# serde_json = "1"
-# toml = "0.8"
+# Serial transport. Cargo integration (locating the built binary and reading
+# `[package.metadata.pi]`) goes through `cargo metadata`/`cargo build` JSON,
+# parsed with serde_json — so no `toml` dependency is needed.
+serialport = "4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [lints]
 workspace = true

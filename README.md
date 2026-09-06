@@ -33,11 +33,13 @@ from its own directory — see [`loader/README.md`](loader/README.md).
 
 ## Status
 
-Early scaffold. Implemented: the framing/CRC core of the protocol, the loader
-boot/UART skeleton (builds and links at `0x80000`, not yet hardware-validated),
-and `cargo-pi` argument dispatch. The streaming decoder, typed messages, the
-loader receive/validate/jump path, and the host transport are designed in
-[`PLANNED.md`](PLANNED.md) against the committed docs above.
+Feature-complete off hardware, not yet validated on a real Pi 2. Implemented and
+tested: the full `chainloader-protocol` codec (framing, CRC, streaming decoder,
+typed messages); the loader's boot, PL011 bring-up (clock set via mailbox), and
+receive/validate/jump path (links at `0x80000`); and `cargo pi load`/`console`
+end to end — including an ELF flattener verified byte-for-byte against `objcopy`.
+Remaining work (hardware bring-up, console raw mode, a hardening suite) is in
+[`PLANNED.md`](PLANNED.md).
 
 ## Development
 

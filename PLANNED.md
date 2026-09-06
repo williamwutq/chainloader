@@ -8,10 +8,11 @@ reader who disagrees knows exactly which claim to attack.
 A shipped entry moves to `CHANGELOG.md` under `[Unreleased]` and is deleted
 from here.
 
-The scaffold in place today: `chainloader-protocol`'s framing, CRC, and
-streaming `Decoder`; the loader boot/UART skeleton; and `cargo-pi` argument
-dispatch. The wire format (`docs/PROTOCOL.md`) and the jump contract
-(`docs/ENTRY_CONTRACT.md`) are committed designs these entries implement.
+In place today (all off-hardware paths implemented and tested): the full
+`chainloader-protocol` codec; the loader's boot, UART, and receive/validate/jump
+path; and `cargo pi load`/`console` end to end. What remains is validation on a
+real Pi 2 and the polish items below. The wire format (`docs/PROTOCOL.md`) and
+the jump contract (`docs/ENTRY_CONTRACT.md`) are the committed references.
 
 ---
 
@@ -57,36 +58,29 @@ be settled off-hardware:
   `init_uart_clock` setting is needed. What remains is confirming on hardware
   that the mailbox exchange succeeds and the banner is legible at 115200.
 
-## `cargo-pi-load` — host transport (0.1.0)
+## `console-raw-mode` — raw terminal for the post-load console (0.2.0)
 
 **Crate:** `cargo-pi`.
-**Breaking change:** No — new subcommand behavior.
-**Depends on:** the shipped `Decoder` and message structs.
+**Breaking change:** No.
+**Depends on:** the shipped `console` passthrough.
 
 ### Motivation
 
-`cargo pi load` and `cargo pi console` are stubs. The acceptance criterion is a
-`cargo build --release && cargo pi load` dev loop, which needs a real serial
-transport.
+`cargo pi console` currently forwards line-buffered stdin, so keystrokes reach
+the Pi a line at a time and there is no character echo control — fine for
+watching output, awkward for interacting with a payload's own REPL.
 
 ### Design
 
-Add `serialport` (transport), and Cargo integration to (1) locate the built
-AArch64 binary via `cargo build --message-format=json` / `cargo metadata`, (2)
-read config from `[package.metadata.pi]`, (3) discover the `/dev/cu.*` device.
-`load`: open the port, `HELLO`/`READY`, send `HEADER`, stream `DATA` in
-`max_chunk` pieces with per-frame ACK and bounded retries, verify the final ACK,
-send `BOOT`, then optionally fall through to `console`. Keep the dependency set
-minimal — `serialport` plus `serde`/`toml` for config; hand-rolled arg parsing.
+Put the terminal into raw mode (cbreak, no echo) for the console's lifetime and
+restore it on exit, so bytes flow through immediately. Needs a `termios` call on
+Unix; weigh a tiny dependency against a small `libc`-free `ioctl` wrapper.
 
 ### Open questions
 
-- **Config source.** `[package.metadata.pi]` in the payload's `Cargo.toml`
-  vs. a separate `pi.toml`. Leaning on `[package.metadata.pi]` so one file
-  configures the payload crate, with CLI flags overriding.
-- **Device auto-select.** When multiple `/dev/cu.*` match, prompt or require
-  `--port`? Leaning: pick the sole match automatically, else error listing
-  candidates.
+- **Dependency.** Whether a raw-mode helper crate earns its place, or whether a
+  minimal hand-rolled `tcsetattr` via `libc` is enough. Leaning hand-rolled to
+  keep the dependency set small, consistent with the rest of the tool.
 
 ## `hardening` — malformed-input and repeat-load test suite (0.1.0)
 

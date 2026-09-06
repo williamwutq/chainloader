@@ -46,6 +46,10 @@ jobs:
       uses: dtolnay/rust-toolchain@master
       with:
         toolchain: ${{ matrix.rust }}
+    # serialport links against libudev on Linux.
+    - name: Install libudev (Linux)
+      if: runner.os == 'Linux'
+      run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
     - name: Cache
       uses: Swatinem/rust-cache@v2
     - name: Build
@@ -62,6 +66,8 @@ jobs:
       with:
         toolchain: stable
         components: clippy, rustfmt
+    - name: Install libudev (Linux)
+      run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
     - name: Cache
       uses: Swatinem/rust-cache@v2
     - name: Clippy
