@@ -1,0 +1,25 @@
+[package]
+name = "chainloader-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Endian-explicit, allocation-free wire protocol shared by the Pi UART chainloader and the host `cargo-pi` tool"
+readme = "README.md"
+keywords = ["raspberry-pi", "bootloader", "uart", "no_std", "protocol"]
+categories = ["no-std", "embedded"]
+
+[package.metadata]
+changelog = "../CHANGELOG.md"
+publish = false
+
+[features]
+# `std` only adds `std::error::Error` impls and is off by default so the loader
+# can depend on this crate unchanged. The wire logic is `no_std` either way.
+default = []
+std = []
+
+[lints]
+workspace = true
