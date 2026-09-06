@@ -1,0 +1,70 @@
+name: cargo-pi
+
+# The host subcommand depends on chainloader-protocol, so a change to either
+# crate (or the shared manifests/lockfile) re-runs this workflow.
+on:
+  push:
+    branches: [ master, main ]
+    paths:
+      - 'cargo-pi/**'
+      - 'chainloader-protocol/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rustfmt.toml'
+      - '.github/workflows/cargo-pi.yml'
+  pull_request:
+    branches: [ master, main ]
+    paths:
+      - 'cargo-pi/**'
+      - 'chainloader-protocol/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rustfmt.toml'
+      - '.github/workflows/cargo-pi.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cargo-pi-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        rust: [stable, beta, nightly]
+        exclude:
+          - os: windows-latest
+            rust: nightly
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ matrix.rust }}
+    - name: Cache
+      uses: Swatinem/rust-cache@v2
+    - name: Build
+      run: cargo build -p cargo-pi --all-features
+    - name: Test
+      run: cargo test -p cargo-pi --all-features
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: stable
+        components: clippy, rustfmt
+    - name: Cache
+      uses: Swatinem/rust-cache@v2
+    - name: Clippy
+      run: cargo clippy -p cargo-pi --all-targets --all-features -- -D warnings
+    - name: Format
+      run: cargo fmt -p cargo-pi --check

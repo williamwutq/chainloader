@@ -1,0 +1,62 @@
+name: loader
+
+# The bare-metal loader is excluded from the workspace and pins its own target
+# and lockfile, so it is built from its own directory. It depends on
+# chainloader-protocol, so a change to either crate re-runs this workflow. The
+# root Cargo.lock is irrelevant here (the loader has loader/Cargo.lock), so it
+# is not a trigger.
+on:
+  push:
+    branches: [ master, main ]
+    paths:
+      - 'loader/**'
+      - 'chainloader-protocol/**'
+      - 'rustfmt.toml'
+      - '.github/workflows/loader.yml'
+  pull_request:
+    branches: [ master, main ]
+    paths:
+      - 'loader/**'
+      - 'chainloader-protocol/**'
+      - 'rustfmt.toml'
+      - '.github/workflows/loader.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: loader-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Cross-compiled to a single bare-metal target, so the host OS does not
+        # matter; only the toolchain channel is worth varying.
+        rust: [stable, beta, nightly]
+    defaults:
+      run:
+        working-directory: loader
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install Rust (bare-metal)
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ matrix.rust }}
+        targets: aarch64-unknown-none
+        components: clippy, rustfmt, llvm-tools
+    - name: Cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: loader
+    - name: Build
+      run: cargo build --release
+    - name: Clippy
+      # No --all-targets: a #![no_main] bare-metal binary has no test harness to
+      # build for aarch64-unknown-none.
+      run: cargo clippy -- -D warnings
+    - name: Format
+      run: cargo fmt --check

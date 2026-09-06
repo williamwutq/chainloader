@@ -48,10 +48,16 @@ cargo fmt --check
 ( cd loader && cargo build --release )       # the bare-metal loader
 ```
 
-CI runs on `master` and `main`: [`ci.yml`](.github/workflows/ci.yml) tests the
-host crates across a stable/beta/nightly × OS matrix, and
-[`check.yml`](.github/workflows/check.yml) gates clippy, formatting, docs, and a
-bare-metal build of the loader.
+CI runs on `master` and `main`, one workflow per crate, each filtered to the
+paths that affect it (a change to `chainloader-protocol` re-runs all three,
+since the others depend on it):
+
+- [`protocol.yml`](.github/workflows/protocol.yml) — tests
+  `chainloader-protocol` across a stable/beta/nightly × OS matrix; clippy, fmt, docs.
+- [`cargo-pi.yml`](.github/workflows/cargo-pi.yml) — same matrix for the host
+  subcommand.
+- [`loader.yml`](.github/workflows/loader.yml) — cross-builds the loader for
+  `aarch64-unknown-none` on stable/beta/nightly; clippy and fmt.
 
 ## Acknowledgements
 
