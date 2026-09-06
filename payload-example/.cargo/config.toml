@@ -1,0 +1,9 @@
+# Pin the bare-metal target so a plain `cargo build` in this directory produces
+# an AArch64 image, and force the custom linker script. `build.rs` adds this
+# directory to the linker search path so `-T link.ld` resolves regardless of the
+# invocation cwd.
+[build]
+target = "aarch64-unknown-none"
+
+[target.aarch64-unknown-none]
+rustflags = ["-C", "link-arg=-Tlink.ld"]

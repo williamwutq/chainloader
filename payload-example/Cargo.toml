@@ -1,0 +1,37 @@
+# Standalone package, excluded from the root workspace: it only builds for
+# `aarch64-unknown-none` (pinned in .cargo/config.toml), so every field is
+# inlined here rather than inherited from the workspace.
+[package]
+name = "payload-example"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["William Wu <williamwutq@gmail.com>", "Claude <claude@anthropic.com>"]
+license = "MIT"
+repository = "https://github.com/williamwutq/chainloader"
+description = "Minimal example payload for the chainloader — validates the entry contract on hardware"
+readme = "README.md"
+publish = false
+
+[[bin]]
+name = "payload-example"
+path = "src/main.rs"
+
+# A bare-metal image cannot unwind; both profiles abort and optimize for size.
+[profile.dev]
+panic = "abort"
+opt-level = 1
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+codegen-units = 1
+
+[lints.rust]
+missing_docs = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unsafe_op_in_unsafe_fn = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

@@ -24,12 +24,15 @@ cargo pi load           # transfer it over UART and boot it
 | [`chainloader-protocol/`](chainloader-protocol/)   | `no_std`, allocation-free wire format shared by loader and host.              |
 | [`loader/`](loader/)                               | Pi-side bare-metal loader (`aarch64-unknown-none`), flashed as `kernel8.img`. |
 | [`cargo-pi/`](cargo-pi/)                           | Host `cargo pi load` / `cargo pi console` subcommand.                         |
+| [`payload-example/`](payload-example/)             | Minimal AArch64 payload that validates the entry contract on hardware.        |
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md)             | Normative wire format and handshake.                                          |
 | [`docs/ENTRY_CONTRACT.md`](docs/ENTRY_CONTRACT.md) | AArch64 register/cache state at the jump.                                     |
 
 The workspace contains the two host-buildable crates (`chainloader-protocol`,
-`cargo-pi`). `loader` is excluded and pins `aarch64-unknown-none`, so it builds
-from its own directory — see [`loader/README.md`](loader/README.md).
+`cargo-pi`). `loader` and `payload-example` are excluded and pin
+`aarch64-unknown-none`, so each builds from its own directory — see
+[`loader/README.md`](loader/README.md) and
+[`payload-example/README.md`](payload-example/README.md).
 
 ## Status
 

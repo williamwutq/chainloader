@@ -42,8 +42,10 @@ cache-maintenance sequence are written from the datasheet and need measuring.
 Flash `kernel8.img` with `arm_64bit=1`, `enable_uart=1`, and
 `dtoverlay=disable-bt` in `config.txt` (the overlay frees PL011 from the Zero
 2 W's on-board Bluetooth so it reaches the GPIO14/15 header pins), confirm the
-banner over a USB-UART adapter, then drive a real load with `cargo pi load`. The
-decisions that cannot be settled off-hardware:
+banner over a USB-UART adapter, then drive a real load with `cargo pi load` from
+`payload-example/` — its `[payload-example] running` banner (EL, `x0`–`x4`, an
+FP op) is the end-to-end success signal. The decisions that cannot be settled
+off-hardware:
 
 ### Open questions
 
@@ -148,9 +150,15 @@ payload; the payload starts a core by writing its entry address to the slot and
 
 ### Open questions
 
-- **Release ABI.** Where to advertise the per-core mailbox — a spare handoff
-  register, or a small boot-info struct pointed to by one? Leaning boot-info, to
-  avoid burning registers on every single-core payload.
+- **Release ABI — resolved: a register.** Advertise the per-core mailbox base in
+  a spare handoff register (`x5`, with the clean-handoff scrub starting at `x6`;
+  `0` when the loader set up no secondaries), not a boot-info struct. A struct is
+  one more thing the payload must read back from memory and keep coherent once it
+  enables caches; a register value sidesteps that entirely, and burning one
+  register a single-core payload ignores is cheap. (The mailbox memory itself
+  still carries the usual spin-table coherency caveat — map it device/
+  non-cacheable or maintain it by hand — but that is inherent to any release
+  mechanism, register-advertised or not.)
 - **Per-core stacks.** Fixed small stacks in the resident loader, or a slice of
   the writable window per core? The window is the payload's; leaning small
   resident loader stacks the payload switches away from.
