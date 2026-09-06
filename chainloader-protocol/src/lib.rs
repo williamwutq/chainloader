@@ -10,7 +10,10 @@
 //! # Layout
 //!
 //! - [`crc`] — CRC-32/ISO-HDLC, used both per-frame and end-to-end over an image.
-//! - [`frame`] — the on-wire frame: magic, version, type, length, payload, CRC.
+//! - [`frame`] — the on-wire frame: magic, version, type, length, payload, CRC,
+//!   plus the one-shot [`encode_frame`].
+//! - [`decoder`] — the streaming, resyncing [`Decoder`] that turns a raw byte
+//!   stream back into validated frames.
 //!
 //! See `docs/PROTOCOL.md` for the full conversation (`HELLO`/`READY`/`HEADER`/
 //! `DATA`/`ACK`/`ERROR`/`BOOT`) and `docs/ENTRY_CONTRACT.md` for the AArch64
@@ -18,8 +21,8 @@
 //!
 //! # Status
 //!
-//! Framing ([`encode_frame`], [`FrameType`]) and checksums are implemented. The
-//! streaming resync decoder and the typed payload structs are the next items in
+//! Framing ([`encode_frame`]), checksums ([`crc32`]), and the streaming
+//! [`Decoder`] are implemented. The typed payload structs are the next item in
 //! `PLANNED.md`; today, payloads are encoded and parsed as raw little-endian
 //! bytes per the field lists on each [`FrameType`] variant.
 #![cfg_attr(not(test), no_std)]
@@ -30,9 +33,11 @@
 extern crate std;
 
 pub mod crc;
+pub mod decoder;
 pub mod frame;
 
 pub use crc::{Crc32, crc32};
+pub use decoder::{DecodeError, Decoded, Decoder};
 pub use frame::{
     EncodeError, FrameType, HEADER_LEN, MAGIC, MAGIC_HI, MAGIC_LO, MAX_FRAME, MAX_PAYLOAD,
     PROTOCOL_VERSION, TRAILER_LEN, encode_frame, frame_len,

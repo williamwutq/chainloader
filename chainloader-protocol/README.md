@@ -30,9 +30,9 @@ See [`../docs/PROTOCOL.md`](../docs/PROTOCOL.md) for the full handshake and
 
 ## Status
 
-Implemented: [`crc`] (CRC-32/ISO-HDLC, one-shot and streaming) and [`frame`]
-(`FrameType`, `encode_frame`, size helpers). Next up (`../PLANNED.md`): the
-streaming resync decoder and typed payload structs.
+Implemented: `crc` (CRC-32/ISO-HDLC, one-shot and streaming), `frame`
+(`FrameType`, `encode_frame`, size helpers), and `decoder` (the streaming,
+resyncing `Decoder`). Next up (`../PLANNED.md`): the typed payload structs.
 
 ## License
 

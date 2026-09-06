@@ -8,10 +8,10 @@ reader who disagrees knows exactly which claim to attack.
 A shipped entry moves to `CHANGELOG.md` under `[Unreleased]` and is deleted
 from here.
 
-The scaffold in place today: the framing/CRC half of `chainloader-protocol`,
-the loader boot/UART skeleton, and `cargo-pi` argument dispatch. The wire format
-(`docs/PROTOCOL.md`) and the jump contract (`docs/ENTRY_CONTRACT.md`) are
-committed designs these entries implement.
+The scaffold in place today: `chainloader-protocol`'s framing, CRC, and
+streaming `Decoder`; the loader boot/UART skeleton; and `cargo-pi` argument
+dispatch. The wire format (`docs/PROTOCOL.md`) and the jump contract
+(`docs/ENTRY_CONTRACT.md`) are committed designs these entries implement.
 
 ---
 
@@ -23,54 +23,11 @@ State `No` explicitly rather than omitting a metadata field.
 
 ---
 
-## `decoder` — streaming resync frame decoder (0.1.0)
-
-**Crate:** `chainloader-protocol`.
-**Breaking change:** No — additive.
-**Depends on:** nothing.
-
-### Motivation
-
-The loader reads the UART one byte at a time and cannot allocate. It needs to
-turn a byte stream — which may start mid-frame or contain line noise — into
-validated frames using only a fixed buffer. `encode_frame` exists; there is no
-decoder yet, so the loader has nothing to drive its state machine.
-
-### Design
-
-A byte-fed state machine over a fixed `[u8; MAX_FRAME]` buffer:
-
-```rust
-pub enum Decoded { None, Frame(FrameType), Error(DecodeError) }
-
-impl Decoder {
-    pub const fn new() -> Self;
-    pub fn push(&mut self, b: u8) -> Decoded; // feed one byte
-    pub fn payload(&self) -> &[u8];           // valid until the next push
-}
-```
-
-Phases: scan for `MAGIC_LO`/`MAGIC_HI`; collect the 4 fixed bytes
-(version/type/length); collect `length + 4` body bytes; verify the CRC. On any
-failure (bad version, unknown type, oversize length, CRC mismatch) it emits
-`Decoded::Error` and returns to scanning — resync is scanning for the next
-magic. `payload()` borrows the internal buffer and is valid until the next
-`push`. No allocation, no panics on malformed input.
-
-### Open questions
-
-- **Payload lifetime.** "Valid until the next `push`" is the simplest contract
-  and enough for a lockstep loader; a queue-of-frames API would be friendlier
-  but needs storage the loader does not have. Keep the borrow contract?
-- **Resync cost.** After a CRC failure, scanning one byte at a time is O(n) in
-  garbage length. Fine for a wired dev link; worth revisiting only if noise is
-  observed on real hardware.
-
 ## `messages` — typed payload structs (0.1.0)
 
 **Crate:** `chainloader-protocol`.
 **Breaking change:** No — additive.
-**Depends on:** nothing (pairs with `decoder`).
+**Depends on:** nothing (pairs with the shipped `Decoder`).
 
 ### Motivation
 
