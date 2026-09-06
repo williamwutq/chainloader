@@ -151,18 +151,58 @@ payload; the payload starts a core by writing its entry address to the slot and
 ### Open questions
 
 - **Release ABI — resolved: a register.** Advertise the per-core mailbox base in
-  a spare handoff register (`x5`, with the clean-handoff scrub starting at `x6`;
-  `0` when the loader set up no secondaries), not a boot-info struct. A struct is
-  one more thing the payload must read back from memory and keep coherent once it
-  enables caches; a register value sidesteps that entirely, and burning one
-  register a single-core payload ignores is cheap. (The mailbox memory itself
-  still carries the usual spin-table coherency caveat — map it device/
-  non-cacheable or maintain it by hand — but that is inherent to any release
-  mechanism, register-advertised or not.)
+  a handoff register (`x6` — the full register map is in `docs/ENTRY_GOAL.md`),
+  not a boot-info struct. A struct is one more thing the payload must read back
+  from memory and keep coherent once it enables caches; a register value sidesteps
+  that entirely, and burning a register a single-core payload ignores is cheap.
+  (The mailbox memory itself still carries the usual spin-table coherency caveat —
+  map it device/non-cacheable or maintain it by hand — but that is inherent to any
+  release mechanism, register-advertised or not.)
+- **Secondary entry register state — resolved: full duplicate.** Each secondary
+  gets the *same* `x0`–`x8` block as core 0, differing only in `x8` (`core_id`),
+  so a core learns the memory/DTB layout from registers without touching shared
+  RAM (and without the cache concern that a RAM read carries). See
+  `docs/ENTRY_GOAL.md`.
 - **Per-core stacks.** Fixed small stacks in the resident loader, or a slice of
   the writable window per core? The window is the payload's; leaning small
   resident loader stacks the payload switches away from.
-- **Secondary entry register state.** Same `x0`–`x4` handoff as core 0, or a
-  bare entry? Leaning bare — the payload already learned the layout from core 0.
 - **Firmware path.** Leave the firmware spin-table usable as well, or fully take
   the cores over? Taking over is cleaner but makes the loader own all four cores.
+
+## `hvc-reload-service` — kernel-requested reload without a power cycle (0.3.0)
+
+**Crate:** `chainloader-loader`.
+**Breaking change:** No — additive; payloads that never `HVC` are unaffected.
+**Depends on:** `loader-hardware-bringup`; interacts with the EL2→EL1 drop.
+
+### Motivation
+
+The loader stays resident after the jump (payloads may not overlap
+`[__loader_start, __loader_end)`), but it is not callable: its only entry re-runs
+the EL2 boot path, which faults now that the payload is at EL1. So the only way
+to load a new kernel is a power cycle. Since the whole tool exists for fast
+iteration, letting a running kernel ask for the next image is the natural win —
+and dropping the payload to EL1 already reserved EL2 for exactly this.
+
+### Design
+
+Before the `ERET`, install `VBAR_EL2` pointing at a resident loader vector table.
+The payload runs at EL1; EL2 is dormant but reachable. `HVC #0` from EL1 traps to
+EL2, where the handler resets `SP_EL2` to the loader stack, re-enters the receive
+loop, and drops the new image to EL1 exactly like the first boot — the same entry
+contract. `HCR_EL2.HCD` is already 0, so `HVC` is enabled; the loader's
+code/data/stack are already protected from the payload. The `HVC` immediate
+(`ESR_EL2.ISS`) selects the service, leaving room to grow (`#0` = reload).
+
+### Open questions
+
+- **Cache coherency on reload.** A payload that enabled its EL1 MMU/caches has
+  dirty lines the EL2 (physical, MMU-off) handler will not see, and the new
+  image's stores must reach the caller-visible view. Broadly clean+invalidate in
+  the handler, or require the caller to clean/disable caches before `HVC`?
+  Leaning: the handler does the maintenance, so the ABI stays "just `HVC #0`".
+- **Return-style services.** Reload never returns, so no EL1 state save is needed.
+  A later service that must return to the caller needs `ELR_EL2`/`SPSR_EL2`/
+  `SP_EL1` save-restore — decide when the first such service appears.
+- **Multi-core.** If secondaries are running when a core reloads, they must be
+  quiesced (re-parked) first. Interacts with `smp-secondary-bringup`.
