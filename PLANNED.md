@@ -23,37 +23,24 @@ State `No` explicitly rather than omitting a metadata field.
 
 ---
 
-## `loader-receive` — receive, validate, and jump (0.1.0)
+## `loader-hardware-bringup` — validate the loader on a real Pi 2 (0.1.0)
 
 **Crate:** `chainloader-loader`.
 **Breaking change:** No — the loader has no public API.
-**Depends on:** the shipped `Decoder` and message structs.
+**Depends on:** the shipped receive path.
 
 ### Motivation
 
-The loader currently echoes bytes. The whole point is to receive an image,
-validate it, and jump. This is the core of the project and the phase-3/phase-4
-work.
+The receive/validate/jump path (`loader/src/receive.rs`) is implemented and the
+UART and cache/jump instructions are verified in disassembly, but none of it has
+run on hardware. The PL011 baud constants, the GPIO routing, and the
+cache-maintenance sequence are written from the datasheet and need measuring.
 
 ### Design
 
-A state machine driven by `Decoder` over `Uart::get_byte`, replying with
-`encode_frame` over `Uart::put_byte`:
-
-- `HELLO` → reply `READY` advertising `max_image_len`, the writable window
-  `[load_addr_min, load_addr_max)` derived from a conservative constant window
-  minus `[__loader_start, __loader_end)`, `alignment`, and `max_chunk`.
-- `HEADER` → validate: `image_len <= max_image_len`; `load_addr` aligned;
-  `[load_addr, load_addr + image_len)` inside the window and non-overlapping the
-  loader (read the linker symbols); reply `ACK(next=0)` or the matching `ERROR`.
-- `DATA` → check `offset == expected`, bounds-check, copy into RAM with
-  `write_volatile`, fold into a streaming `Crc32`, reply `ACK(next=received)`.
-- final `DATA` → verify streamed CRC == `image_crc32`; `ACK` or `ERROR(ImageCrc)`.
-- `BOOT` → run the `ENTRY_CONTRACT.md` cache sequence and branch. `BOOT` with no
-  verified image → `ERROR(NoImage)`.
-
-Bounds and alignment are checked against actual linker symbols, not just
-constants, so the loader can never overwrite itself.
+Flash `kernel8.img`, confirm the banner over a USB-UART adapter, then drive a
+real load with `cargo pi load` once that exists. The two decisions that cannot
+be settled off-hardware:
 
 ### Open questions
 
@@ -64,6 +51,12 @@ constants, so the loader can never overwrite itself.
 - **Cache maintenance while MMU off.** Confirm on hardware whether firmware
   leaves caches on; the `IC IALLU` + `DSB`/`ISB` sequence is written to be safe
   either way, but this needs measuring, not assuming.
+- **Baud clock.** The loader currently assumes `init_uart_clock=48000000` in
+  `config.txt` (`IBRD=26`, `FBRD=3`), a verified-correct pairing but an external
+  dependency. The bztsrc raspi3 tutorial instead sets the UART clock to a known
+  rate via the mailbox property interface (`MBOX_TAG_SETCLKRATE`), making baud
+  independent of `config.txt`. Adopt the mailbox approach so a stock SD card
+  works — strongest single robustness win found during research.
 
 ## `cargo-pi-load` — host transport (0.1.0)
 

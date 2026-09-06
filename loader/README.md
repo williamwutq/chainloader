@@ -39,9 +39,13 @@ range so the running loader can never overwrite itself.
 
 ## Status
 
-Phase-2 skeleton: boot trampoline, UART bring-up, banner, and byte echo. Not
-yet validated on hardware. The framed receive/validate/jump path is next; see
-[`../PLANNED.md`](../PLANNED.md).
+Boot trampoline, UART bring-up, banner, and the full framed
+receive/validate/jump path are implemented ([`src/receive.rs`](src/receive.rs)):
+it advertises `READY`, validates each `HEADER` against the writable window and
+the loader's own footprint, streams `DATA` into RAM under a running CRC, and on
+`BOOT` runs the cache-maintenance sequence and branches per the entry contract.
+Not yet validated on hardware — cache behavior and a receive timeout are the
+remaining open questions in [`../PLANNED.md`](../PLANNED.md).
 
 ## License
 

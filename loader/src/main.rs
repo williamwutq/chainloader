@@ -8,13 +8,14 @@
 //!
 //! # Status
 //!
-//! This is the phase-2 skeleton: boot, UART bring-up, a diagnostic banner, and
-//! a byte echo. The framed receive/validate/jump path is the next milestone in
-//! `../PLANNED.md`; [`chainloader_protocol`] already provides the framing and
-//! CRC it will use.
+//! Boot, UART bring-up, and the framed receive/validate/jump path are in place
+//! (see [`receive`]); the loader has not yet been validated on hardware. Cache
+//! maintenance and timeout behavior are the remaining open questions in
+//! `../PLANNED.md`.
 #![no_std]
 #![no_main]
 
+mod receive;
 mod uart;
 
 use core::arch::global_asm;
@@ -55,30 +56,23 @@ _start:
 /// zeroed BSS. Must never return.
 #[unsafe(no_mangle)]
 pub extern "C" fn loader_main() -> ! {
-    let uart = Uart;
+    let mut uart = Uart;
     // SAFETY: first and only UART user, running on the boot core at startup.
     unsafe {
         uart.init();
     }
 
-    let mut u = uart;
     let _ = writeln!(
-        u,
+        uart,
         "\nchainloader {} (protocol v{})",
         env!("CARGO_PKG_VERSION"),
         chainloader_protocol::PROTOCOL_VERSION,
     );
-    let _ = writeln!(
-        u,
-        "UART up @ 115200 8N1. Echoing bytes (receive path: TODO)."
-    );
+    let _ = writeln!(uart, "UART up @ 115200 8N1. Waiting for host (HELLO).");
 
-    // Placeholder until the framed protocol lands: echo received bytes so the
-    // link can be smoke-tested end to end from the host.
-    loop {
-        let byte = u.get_byte();
-        u.put_byte(byte);
-    }
+    // Hand off to the protocol state machine; it never returns (it either
+    // branches to a loaded image or keeps servicing the link).
+    receive::run(uart)
 }
 
 /// Nothing to unwind to on bare metal: report if the UART is up, then park.
