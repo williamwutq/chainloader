@@ -93,7 +93,7 @@ struct Transfer {
 
 /// Runs the loader forever: services the protocol until a valid `BOOT` branches
 /// away to the loaded image (and never returns).
-pub fn run(uart: Uart) -> ! {
+pub fn run(uart: Uart, dtb: u64) -> ! {
     let limits = Limits::detect(); // size the writable window to this board
     send_ready(&uart, limits); // greet a host that is already listening
     let mut decoder = Decoder::new();
@@ -103,7 +103,9 @@ pub fn run(uart: Uart) -> ! {
         match decoder.push(uart.get_byte()) {
             Decoded::None => {}
             Decoded::Error(e) => send_error(&uart, decode_error_code(e), 0),
-            Decoded::Frame(ty) => handle_frame(&uart, &mut transfer, ty, decoder.payload(), limits),
+            Decoded::Frame(ty) => {
+                handle_frame(&uart, &mut transfer, ty, decoder.payload(), limits, dtb)
+            }
         }
     }
 }
@@ -115,6 +117,7 @@ fn handle_frame(
     ty: FrameType,
     payload: &[u8],
     limits: Limits,
+    dtb: u64,
 ) {
     match ty {
         FrameType::Hello => {
@@ -155,6 +158,7 @@ fn handle_frame(
                         t.header.image_len,
                         t.header.mem_len,
                         limits.window_max,
+                        dtb,
                     )
                 }
             }
@@ -270,10 +274,18 @@ unsafe fn write_image(load_addr: u64, offset: u32, chunk: &[u8]) {
 /// proven writable by [`validate_header`]. Masks interrupts, zero-fills the BSS
 /// tail `[load_addr+image_len, load_addr+mem_len)`, makes the whole footprint
 /// coherent with instruction fetch, configures EL1 (AArch64, reset `SCTLR_EL1`,
-/// EL1 timer access, `SP_EL1` on the loader stack), and hands over
-/// `x0=load_addr`, `x1=image_len`, `x2=WINDOW_MIN`, `x3=window_max` at EL1 per
-/// `../docs/ENTRY_CONTRACT.md`.
-unsafe fn jump(entry: u64, load_addr: u64, image_len: u32, mem_len: u32, window_max: u64) -> ! {
+/// null `VBAR_EL1`, EL1 timer access, `SP_EL1` on the loader stack), and hands
+/// over `x0=load_addr`, `x1=image_len`, `x2=WINDOW_MIN`, `x3=window_max`,
+/// `x4=dtb` at EL1 with every other GPR and all SIMD/FP (`v0`–`v31`) registers
+/// zeroed, per `../docs/ENTRY_CONTRACT.md`.
+unsafe fn jump(
+    entry: u64,
+    load_addr: u64,
+    image_len: u32,
+    mem_len: u32,
+    window_max: u64,
+    dtb: u64,
+) -> ! {
     // `__stack_top`; the EL1 image lands on the loader's stack as a courtesy.
     let stack_top = loader_bounds().1;
     unsafe {
@@ -301,9 +313,71 @@ unsafe fn jump(entry: u64, load_addr: u64, image_len: u32, mem_len: u32, window_
             "msr  cnthctl_el2, {cnthctl}",
             "msr  cntvoff_el2, xzr",
             "msr  sctlr_el1, {sctlr}",
+            "msr  vbar_el1, xzr",       // null EL1 vector base; payload installs its own
             "msr  sp_el1, {stack}",     // EL1 lands on the loader's stack
             "msr  spsr_el2, {spsr}",
             "msr  elr_el2, {entry}",    // return into the image entry at EL1
+            // Clean handoff: x0-x4 carry the contract; scrub every other GPR.
+            // (These also overwrite the scratch operands above, now consumed.)
+            "mov  x5, xzr",
+            "mov  x6, xzr",
+            "mov  x7, xzr",
+            "mov  x8, xzr",
+            "mov  x9, xzr",
+            "mov  x10, xzr",
+            "mov  x11, xzr",
+            "mov  x12, xzr",
+            "mov  x13, xzr",
+            "mov  x14, xzr",
+            "mov  x15, xzr",
+            "mov  x16, xzr",
+            "mov  x17, xzr",
+            "mov  x18, xzr",
+            "mov  x19, xzr",
+            "mov  x20, xzr",
+            "mov  x21, xzr",
+            "mov  x22, xzr",
+            "mov  x23, xzr",
+            "mov  x24, xzr",
+            "mov  x25, xzr",
+            "mov  x26, xzr",
+            "mov  x27, xzr",
+            "mov  x28, xzr",
+            "mov  x29, xzr",
+            "mov  x30, xzr",
+            // Scrub the SIMD/FP register file too (enabled above at boot).
+            "movi v0.2d, #0",
+            "movi v1.2d, #0",
+            "movi v2.2d, #0",
+            "movi v3.2d, #0",
+            "movi v4.2d, #0",
+            "movi v5.2d, #0",
+            "movi v6.2d, #0",
+            "movi v7.2d, #0",
+            "movi v8.2d, #0",
+            "movi v9.2d, #0",
+            "movi v10.2d, #0",
+            "movi v11.2d, #0",
+            "movi v12.2d, #0",
+            "movi v13.2d, #0",
+            "movi v14.2d, #0",
+            "movi v15.2d, #0",
+            "movi v16.2d, #0",
+            "movi v17.2d, #0",
+            "movi v18.2d, #0",
+            "movi v19.2d, #0",
+            "movi v20.2d, #0",
+            "movi v21.2d, #0",
+            "movi v22.2d, #0",
+            "movi v23.2d, #0",
+            "movi v24.2d, #0",
+            "movi v25.2d, #0",
+            "movi v26.2d, #0",
+            "movi v27.2d, #0",
+            "movi v28.2d, #0",
+            "movi v29.2d, #0",
+            "movi v30.2d, #0",
+            "movi v31.2d, #0",
             "eret",
             hcr = in(reg) hcr_el2,
             cnthctl = in(reg) cnthctl_el2,
@@ -315,6 +389,7 @@ unsafe fn jump(entry: u64, load_addr: u64, image_len: u32, mem_len: u32, window_
             in("x1") u64::from(image_len),
             in("x2") WINDOW_MIN,
             in("x3") window_max,
+            in("x4") dtb,
             options(noreturn, nostack),
         )
     }

@@ -33,6 +33,7 @@ global_asm!(
 .section .text.boot
 .global _start
 _start:
+    mov     x19, x0                // preserve the firmware's DTB pointer (x0) before we clobber it
     mrs     x0, mpidr_el1
     and     x0, x0, #0xFF          // core id in the low bits
     cbz     x0, 2f
@@ -58,6 +59,7 @@ _start:
 6:  mov     x0, #(3 << 20)         // CPACR_EL1.FPEN = 0b11: no trap at EL1/EL0
     msr     cpacr_el1, x0
     isb
+    mov     x0, x19                // pass the DTB pointer as loader_main's first argument
     bl      loader_main
 5:  wfe                            // loader_main must not return; park if it does
     b       5b
@@ -65,9 +67,10 @@ _start:
 );
 
 /// Rust entry point, called from the boot trampoline with a valid stack and
-/// zeroed BSS. Must never return.
+/// zeroed BSS. `dtb` is the device-tree-blob pointer the firmware passed in `x0`
+/// (0 if none), forwarded to the loaded image. Must never return.
 #[unsafe(no_mangle)]
-pub extern "C" fn loader_main() -> ! {
+pub extern "C" fn loader_main(dtb: u64) -> ! {
     let mut uart = Uart;
     // SAFETY: first and only UART user, running on the boot core at startup.
     unsafe {
@@ -84,7 +87,7 @@ pub extern "C" fn loader_main() -> ! {
 
     // Hand off to the protocol state machine; it never returns (it either
     // branches to a loaded image or keeps servicing the link).
-    receive::run(uart)
+    receive::run(uart, dtb)
 }
 
 /// Nothing to unwind to on bare metal: report if the UART is up, then park.

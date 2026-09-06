@@ -7,32 +7,39 @@ independent loaders and payloads should both be able to rely on it.
 
 ## Processor state at entry
 
-| Property        | Value at entry                                                                                                                         |
-|-----------------|----------------------------------------------------------------------------------------------------------------------------------------|
-| Core            | Core 0 only. Cores 1–3 remain parked in the firmware spin loop.                                                                        |
-| Exception level | EL1 (AArch64). Firmware delivers the loader at EL2; the loader configures EL1 and drops to it via `ERET` before entry (see below).     |
-| MMU             | Off. No translation is enabled; all addresses are physical.                                                                            |
-| Caches          | As the firmware left them. The loader performs the maintenance below so the freshly written image is coherent with instruction fetch.  |
-| `DAIF`          | All masked (D, A, I, F). The payload owns interrupt setup.                                                                             |
-| FP/SIMD         | Enabled. The loader clears the FP/SIMD trap (`CPTR_EL2.TFP=0` at EL2, `CPACR_EL1.FPEN=0b11`), so NEON is usable without further setup. |
-| `SP`            | Points into the loader's stack. The payload **must** set its own stack before using one.                                               |
-| `PC`            | `load_addr + entry_off`.                                                                                                               |
+| Property        | Value at entry                                                                 |
+|-----------------|--------------------------------------------------------------------------------|
+| Core            | Core 0 only. Cores 1–3 remain parked in the firmware spin loop.                |
+| Exception level | EL1 (AArch64).                                                                 |
+| MMU             | Off. No translation is enabled; all addresses are physical.                    |
+| D-cache         | Loaded image cleaned to the Point of Coherency; otherwise as firmware left it. |
+| I-cache         | Invalidated (`IC IALLU`), so instruction fetch sees the loaded image.          |
+| `DAIF`          | All masked (D, A, I, F).                                                       |
+| FP/SIMD         | Enabled (`CPACR_EL1.FPEN=0b11`); NEON usable.                                  |
+| `SP`            | `SP_EL1` points into the loader's stack.                                       |
+| `PC`            | `load_addr + entry_off`.                                                       |
 
 ## Register handoff
 
-| Reg    | Value at entry                                  |
-|--------|-------------------------------------------------|
-| `x0`   | `load_addr` — physical base of the loaded image |
-| `x1`   | `image_len` — image length in bytes             |
-| `x2`   | `load_addr_min` — writable window low bound     |
-| `x3`   | `load_addr_max` — writable window high bound    |
-| others | unspecified; do not rely on them                |
+| Reg        | Value at entry                                         |
+|------------|--------------------------------------------------------|
+| `x0`       | `load_addr` — physical base of the loaded image        |
+| `x1`       | `image_len` — image length in bytes                    |
+| `x2`       | `load_addr_min` — writable window low bound            |
+| `x3`       | `load_addr_max` — writable window high bound           |
+| `x4`       | `dtb` — firmware device-tree-blob pointer, `0` if none |
+| `x5`–`x30` | `0` — scrubbed for a clean handoff                     |
+| `v0`–`v31` | `0` — SIMD/FP register file scrubbed                   |
 
 `x2`/`x3` are the same writable window the loader advertised in `READY`
 (`WINDOW_MIN`/`WINDOW_MAX`): a half-open `[x2, x3)` of physical RAM the payload
 can use freely. It sits entirely above the loader, so staying within it also
-keeps clear of `[__loader_start, __loader_end)`. A payload that ignores `x0`–`x3`
-(e.g. one linked to a fixed load address) is also valid.
+keeps clear of `[__loader_start, __loader_end)`.
+
+`x4` is the device-tree-blob pointer the firmware handed the loader (in `x0` at
+its own entry), forwarded verbatim. It is `0` when the firmware loaded no device
+tree, so a payload that uses it must handle the null case. A payload that ignores
+`x0`–`x4` (e.g. one linked to a fixed load address) is also valid.
 
 ## Cache/coherency sequence
 
@@ -43,9 +50,9 @@ the destination range. Before entering the image, the loader:
    so the image's zero-initialized statics are clear (and free of stale bytes
    from a previous load).
 2. `DSB SY` — ensure all image and BSS stores have completed.
-3. Clean the data cache to the point of unification over the full footprint
-   `[load_addr, load_addr + mem_len)` (or clean+invalidate to PoC if caches are
-   on), so instruction fetch sees the written bytes.
+3. Clean the data cache to the Point of Coherency (`DC CVAC`) over the full
+   footprint `[load_addr, load_addr + mem_len)`, so instruction fetch sees the
+   written bytes.
 4. Invalidate the instruction cache (`IC IALLU`) and the branch predictor.
 5. `DSB SY; ISB` — complete maintenance and flush the pipeline.
 6. Drop EL2 → EL1 (below) and `ERET` to `load_addr + entry_off`.
@@ -61,15 +68,19 @@ the final `ERET` the loader configures the EL1 it returns into:
 - `HCR_EL2.RW = 1` — EL1 executes in AArch64.
 - `SCTLR_EL1 = 0x30d0_0800` — a reset value with the MMU and caches **off** and
   the architectural RES1 bits set. The payload owns turning the MMU on.
+- `VBAR_EL1 = 0` — a null vector base. The loader installs **no** actual EL1
+  vector table, so a payload that takes an exception before setting its own
+  `VBAR_EL1` will fault. `0` is a deterministic base, not a working handler.
 - `CNTHCTL_EL2.{EL1PCTEN,EL1PCEN} = 1`, `CNTVOFF_EL2 = 0` — EL1 can read the
   physical/virtual counters and timers without trapping to EL2.
 - `SP_EL1` = the loader's stack top, so the payload has a valid (if temporary)
   stack immediately; it **must** still switch to its own before real use.
 - `SPSR_EL2` = EL1h with `DAIF` masked, `ELR_EL2 = load_addr + entry_off`.
 
-The loader installs **no** EL1 vector table (`VBAR_EL1` is left as-is), so a
-payload that takes an exception before installing its own will fault. A payload
-that wants to run at EL2 (e.g. a hypervisor) is not served by this loader.
+`x0`–`x4` carry the handoff (above); every other general-purpose register
+(`x5`–`x30`) and the whole SIMD/FP register file (`v0`–`v31`) are zeroed just
+before the `ERET` for a clean, deterministic entry. A payload that wants to run
+at EL2 (e.g. a hypervisor) is not served by this loader.
 
 ## Memory image at entry
 
@@ -84,9 +95,8 @@ statics are already zero at entry — it does **not** need to clear its own BSS.
 
 - It does not enable or configure the MMU.
 - It does not wake secondary cores.
-- It does not install an exception vector table for the payload; `VBAR_ELx` is
-  left as-is. A payload taking exceptions must install its own.
-- It does not clear general-purpose registers other than the handoff set.
+- It does not install an actual exception vector table; it only sets
+  `VBAR_EL1 = 0` (above), so a payload taking exceptions must install its own.
 
 ## Payload obligations
 
