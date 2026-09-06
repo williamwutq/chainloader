@@ -16,7 +16,9 @@ independent loaders and payloads should both be able to rely on it.
 | I-cache         | Invalidated (`IC IALLU`), so instruction fetch sees the loaded image.          |
 | `DAIF`          | All masked (D, A, I, F).                                                       |
 | FP/SIMD         | Enabled (`CPACR_EL1.FPEN=0b11`); NEON usable.                                  |
-| `SP`            | `SP_EL1` points into the loader's stack.                                       |
+| Timers          | Generic timer/counter readable at EL1 (physical & virtual); `CNTVOFF_EL2 = 0`. |
+| UART            | PL011 (UART0) up at 115200 8N1 on GPIO14/15 (ALT0); usable without re-init.    |
+| `SP`            | `SP_EL1` = `load_addr_max` (top of the writable window).                       |
 | `PC`            | `load_addr + entry_off`.                                                       |
 
 ## Register handoff
@@ -73,8 +75,9 @@ the final `ERET` the loader configures the EL1 it returns into:
   `VBAR_EL1` will fault. `0` is a deterministic base, not a working handler.
 - `CNTHCTL_EL2.{EL1PCTEN,EL1PCEN} = 1`, `CNTVOFF_EL2 = 0` — EL1 can read the
   physical/virtual counters and timers without trapping to EL2.
-- `SP_EL1` = the loader's stack top, so the payload has a valid (if temporary)
-  stack immediately; it **must** still switch to its own before real use.
+- `SP_EL1` = `load_addr_max`, the top of the writable window — a valid default
+  stack in the payload's own RAM (full-descending, outside the loader), so it
+  works immediately. The payload may keep it or set its own.
 - `SPSR_EL2` = EL1h with `DAIF` masked, `ELR_EL2 = load_addr + entry_off`.
 
 `x0`–`x4` carry the handoff (above); every other general-purpose register
@@ -100,7 +103,8 @@ statics are already zero at entry — it does **not** need to clear its own BSS.
 
 ## Payload obligations
 
-- Set `SP` before using a stack.
+- A default stack (`SP_EL1` = window top) is provided; set your own only if you
+  want it elsewhere.
 - If it uses memory outside its own image, respect the writable window the
   loader advertised in `READY` and avoid `[__loader_start, __loader_end)` so a
   subsequent `load` can reuse the still-resident loader.

@@ -274,10 +274,10 @@ unsafe fn write_image(load_addr: u64, offset: u32, chunk: &[u8]) {
 /// proven writable by [`validate_header`]. Masks interrupts, zero-fills the BSS
 /// tail `[load_addr+image_len, load_addr+mem_len)`, makes the whole footprint
 /// coherent with instruction fetch, configures EL1 (AArch64, reset `SCTLR_EL1`,
-/// null `VBAR_EL1`, EL1 timer access, `SP_EL1` on the loader stack), and hands
-/// over `x0=load_addr`, `x1=image_len`, `x2=WINDOW_MIN`, `x3=window_max`,
-/// `x4=dtb` at EL1 with every other GPR and all SIMD/FP (`v0`–`v31`) registers
-/// zeroed, per `../docs/ENTRY_CONTRACT.md`.
+/// null `VBAR_EL1`, EL1 timer access, `SP_EL1` at the top of the writable
+/// window), and hands over `x0=load_addr`, `x1=image_len`, `x2=WINDOW_MIN`,
+/// `x3=window_max`, `x4=dtb` at EL1 with every other GPR and all SIMD/FP
+/// (`v0`–`v31`) registers zeroed, per `../docs/ENTRY_CONTRACT.md`.
 unsafe fn jump(
     entry: u64,
     load_addr: u64,
@@ -286,8 +286,6 @@ unsafe fn jump(
     window_max: u64,
     dtb: u64,
 ) -> ! {
-    // `__stack_top`; the EL1 image lands on the loader's stack as a courtesy.
-    let stack_top = loader_bounds().1;
     unsafe {
         asm!("msr daifset, #0xf"); // mask D, A, I, F
         // Clear the declared BSS tail so the image's zero-init statics are zero
@@ -314,7 +312,7 @@ unsafe fn jump(
             "msr  cntvoff_el2, xzr",
             "msr  sctlr_el1, {sctlr}",
             "msr  vbar_el1, xzr",       // null EL1 vector base; payload installs its own
-            "msr  sp_el1, {stack}",     // EL1 lands on the loader's stack
+            "msr  sp_el1, {stack}",     // stack at the top of the writable window
             "msr  spsr_el2, {spsr}",
             "msr  elr_el2, {entry}",    // return into the image entry at EL1
             // Clean handoff: x0-x4 carry the contract; scrub every other GPR.
@@ -383,7 +381,7 @@ unsafe fn jump(
             cnthctl = in(reg) cnthctl_el2,
             sctlr = in(reg) sctlr_el1,
             spsr = in(reg) spsr_el2,
-            stack = in(reg) stack_top,
+            stack = in(reg) window_max,
             entry = in(reg) entry,
             in("x0") load_addr,
             in("x1") u64::from(image_len),
