@@ -19,27 +19,54 @@ use chainloader_protocol::{
     ImageHeader, MAX_FRAME, MAX_PAYLOAD, Ready, encode_frame,
 };
 
+use crate::mailbox;
 use crate::uart::Uart;
 
 /// Inclusive low bound of the writable window: 2 MiB. Below this sits the
 /// loader (at 0x80000), the firmware's low-memory structures, and the exception
 /// vector area, all of which must stay untouched.
 const WINDOW_MIN: u64 = 0x0020_0000;
-/// Exclusive high bound of the writable window: 448 MiB. This is the safe floor
-/// across the supported boards — set by the Pi Zero 2 W's 512 MiB minus a
-/// default 64 MiB `gpu_mem` split (leaving the ARM the bottom 448 MiB =
-/// 0x1C00_0000), and still valid, just conservative, on the 1 GiB Pi 2/3. A
-/// smaller `gpu_mem` raises the true ceiling; a `GET_ARM_MEMORY` mailbox query
-/// would size it per board instead of assuming the smallest.
-const WINDOW_MAX: u64 = 0x1C00_0000;
+/// Exclusive high bound used only if the mailbox memory query fails: 448 MiB,
+/// the safe floor across supported boards (a 512 MiB Zero 2 W minus a default
+/// 64 MiB `gpu_mem` split). It is already 1 MiB-aligned.
+const FALLBACK_WINDOW_MAX: u64 = 0x1C00_0000;
 /// Required alignment of a load address (advertised in `READY`).
 const REQUIRED_ALIGN: u64 = 0x800;
-/// Largest image the loader will accept: the whole window.
-const MAX_IMAGE_LEN: u32 = (WINDOW_MAX - WINDOW_MIN) as u32;
 /// Largest `DATA` chunk: a full frame payload minus the `offset` field.
 const MAX_CHUNK: u16 = (MAX_PAYLOAD - DataFrame::HEADER) as u16;
 /// Loader build version, advertised in `READY`.
 const LOADER_VERSION: u32 = 1;
+
+/// Writable-window limits, sized to the board at startup so the loader is not
+/// pinned to one platform's RAM size.
+#[derive(Clone, Copy)]
+struct Limits {
+    /// Exclusive high bound of the writable window.
+    window_max: u64,
+    /// Largest transferable image: `window_max - WINDOW_MIN`, saturated to `u32`.
+    max_image_len: u32,
+}
+
+impl Limits {
+    /// Sizes the window from the ARM RAM the VideoCore reports (already net of
+    /// the `gpu_mem` split), rounded down to a 1 MiB boundary. Falls back to a
+    /// conservative default if the mailbox query fails or reports too little.
+    fn detect() -> Self {
+        // SAFETY: boot core, MMU off; a single synchronous mailbox exchange.
+        let window_max = match unsafe { mailbox::arm_memory() } {
+            // Round the ARM RAM top down to the previous 1 MiB (clear low 20 bits).
+            Some((base, size)) if (base + size) & !0xF_FFFF > WINDOW_MIN => {
+                (base + size) & !0xF_FFFF
+            }
+            _ => FALLBACK_WINDOW_MAX,
+        };
+        let max_image_len = u32::try_from(window_max - WINDOW_MIN).unwrap_or(u32::MAX);
+        Self {
+            window_max,
+            max_image_len,
+        }
+    }
+}
 
 unsafe extern "C" {
     static __loader_start: u8;
@@ -67,7 +94,8 @@ struct Transfer {
 /// Runs the loader forever: services the protocol until a valid `BOOT` branches
 /// away to the loaded image (and never returns).
 pub fn run(uart: Uart) -> ! {
-    send_ready(&uart); // greet a host that is already listening
+    let limits = Limits::detect(); // size the writable window to this board
+    send_ready(&uart, limits); // greet a host that is already listening
     let mut decoder = Decoder::new();
     let mut transfer: Option<Transfer> = None;
 
@@ -75,20 +103,26 @@ pub fn run(uart: Uart) -> ! {
         match decoder.push(uart.get_byte()) {
             Decoded::None => {}
             Decoded::Error(e) => send_error(&uart, decode_error_code(e), 0),
-            Decoded::Frame(ty) => handle_frame(&uart, &mut transfer, ty, decoder.payload()),
+            Decoded::Frame(ty) => handle_frame(&uart, &mut transfer, ty, decoder.payload(), limits),
         }
     }
 }
 
 /// Dispatches one validated frame. May branch to the image and never return.
-fn handle_frame(uart: &Uart, transfer: &mut Option<Transfer>, ty: FrameType, payload: &[u8]) {
+fn handle_frame(
+    uart: &Uart,
+    transfer: &mut Option<Transfer>,
+    ty: FrameType,
+    payload: &[u8],
+    limits: Limits,
+) {
     match ty {
         FrameType::Hello => {
             *transfer = None; // a new session abandons any partial transfer
-            send_ready(uart);
+            send_ready(uart, limits);
         }
         FrameType::Header => match ImageHeader::from_bytes(payload) {
-            Ok(header) => match validate_header(&header) {
+            Ok(header) => match validate_header(&header, limits) {
                 Ok(()) => {
                     *transfer = Some(Transfer {
                         header,
@@ -120,6 +154,7 @@ fn handle_frame(uart: &Uart, transfer: &mut Option<Transfer>, ty: FrameType, pay
                         t.header.load_addr,
                         t.header.image_len,
                         t.header.mem_len,
+                        limits.window_max,
                     )
                 }
             }
@@ -176,7 +211,7 @@ fn handle_data(uart: &Uart, transfer: &mut Option<Transfer>, payload: &[u8]) {
 
 /// Validates an image header against the writable window, alignment, and the
 /// loader's own footprint. Errors map directly to the wire [`ErrorCode`].
-fn validate_header(h: &ImageHeader) -> Result<(), ErrorCode> {
+fn validate_header(h: &ImageHeader, limits: Limits) -> Result<(), ErrorCode> {
     if h.image_len == 0 {
         return Err(ErrorCode::BadLength);
     }
@@ -184,7 +219,7 @@ fn validate_header(h: &ImageHeader) -> Result<(), ErrorCode> {
         // The memory footprint cannot be smaller than the transferred bytes.
         return Err(ErrorCode::BadLength);
     }
-    if h.image_len > MAX_IMAGE_LEN {
+    if h.image_len > limits.max_image_len {
         return Err(ErrorCode::ImageTooLarge);
     }
     if h.load_addr % REQUIRED_ALIGN != 0 {
@@ -197,7 +232,7 @@ fn validate_header(h: &ImageHeader) -> Result<(), ErrorCode> {
     let end = start
         .checked_add(u64::from(h.mem_len))
         .ok_or(ErrorCode::AddrOutOfRange)?;
-    if start < WINDOW_MIN || end > WINDOW_MAX {
+    if start < WINDOW_MIN || end > limits.window_max {
         return Err(ErrorCode::AddrOutOfRange);
     }
     let (loader_start, loader_end) = loader_bounds();
@@ -236,9 +271,9 @@ unsafe fn write_image(load_addr: u64, offset: u32, chunk: &[u8]) {
 /// tail `[load_addr+image_len, load_addr+mem_len)`, makes the whole footprint
 /// coherent with instruction fetch, configures EL1 (AArch64, reset `SCTLR_EL1`,
 /// EL1 timer access, `SP_EL1` on the loader stack), and hands over
-/// `x0=load_addr`, `x1=image_len`, `x2=WINDOW_MIN`, `x3=WINDOW_MAX` at EL1 per
+/// `x0=load_addr`, `x1=image_len`, `x2=WINDOW_MIN`, `x3=window_max` at EL1 per
 /// `../docs/ENTRY_CONTRACT.md`.
-unsafe fn jump(entry: u64, load_addr: u64, image_len: u32, mem_len: u32) -> ! {
+unsafe fn jump(entry: u64, load_addr: u64, image_len: u32, mem_len: u32, window_max: u64) -> ! {
     // `__stack_top`; the EL1 image lands on the loader's stack as a courtesy.
     let stack_top = loader_bounds().1;
     unsafe {
@@ -279,7 +314,7 @@ unsafe fn jump(entry: u64, load_addr: u64, image_len: u32, mem_len: u32) -> ! {
             in("x0") load_addr,
             in("x1") u64::from(image_len),
             in("x2") WINDOW_MIN,
-            in("x3") WINDOW_MAX,
+            in("x3") window_max,
             options(noreturn, nostack),
         )
     }
@@ -344,12 +379,12 @@ fn send_frame(uart: &Uart, ty: FrameType, payload: &[u8]) {
     }
 }
 
-fn send_ready(uart: &Uart) {
+fn send_ready(uart: &Uart, limits: Limits) {
     let ready = Ready {
         loader_version: LOADER_VERSION,
-        max_image_len: MAX_IMAGE_LEN,
+        max_image_len: limits.max_image_len,
         load_addr_min: WINDOW_MIN,
-        load_addr_max: WINDOW_MAX,
+        load_addr_max: limits.window_max,
         alignment: REQUIRED_ALIGN as u32,
         max_chunk: MAX_CHUNK,
     };

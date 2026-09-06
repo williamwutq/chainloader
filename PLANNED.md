@@ -59,11 +59,13 @@ decisions that cannot be settled off-hardware:
   and uses `IBRD=2`, `FBRD=0xB`, matching the bztsrc reference, so no
   `init_uart_clock` setting is needed. What remains is confirming on hardware
   that the mailbox exchange succeeds and the banner is legible at 115200.
-- **Writable-window ceiling.** `WINDOW_MAX` is hardcoded to 448 MiB — the Zero
-  2 W's 512 MiB minus a default 64 MiB `gpu_mem` split. A `GET_ARM_MEMORY`
-  mailbox query at boot would set it from the firmware's actual ARM/GPU split
-  instead of assuming, and the mailbox path already exists for the UART clock.
-  Leaning: switch to the query once bring-up works.
+- **Writable-window ceiling — resolved, needs hardware confirmation.** The
+  window's high bound is sized at boot from the ARM RAM the VideoCore reports
+  (`GET_ARM_MEMORY`, `src/mailbox.rs`), rounded down to a 1 MiB boundary, so it
+  tracks the board (512 MiB Zero 2 W, 1 GiB Pi 2/3) and the `gpu_mem` split
+  instead of assuming. A conservative 448 MiB fallback covers a failed query.
+  What remains is confirming on hardware that the query returns the expected
+  size.
 
 ## `console-raw-mode` — raw terminal for the post-load console (0.2.0)
 
