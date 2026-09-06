@@ -225,7 +225,8 @@ unsafe fn write_image(load_addr: u64, offset: u32, chunk: &[u8]) {
     }
 }
 
-/// Establishes the entry contract and branches to the loaded image. Never returns.
+/// Establishes the entry contract, drops to EL1, and `ERET`s into the loaded
+/// image. Never returns.
 ///
 /// # Safety
 ///
@@ -233,9 +234,13 @@ unsafe fn write_image(load_addr: u64, offset: u32, chunk: &[u8]) {
 /// with `image_len <= mem_len` and the footprint `[load_addr, load_addr+mem_len)`
 /// proven writable by [`validate_header`]. Masks interrupts, zero-fills the BSS
 /// tail `[load_addr+image_len, load_addr+mem_len)`, makes the whole footprint
-/// coherent with instruction fetch, and hands over `x0=load_addr`,
-/// `x1=image_len`, `x2=x3=0` per `../docs/ENTRY_CONTRACT.md`.
+/// coherent with instruction fetch, configures EL1 (AArch64, reset `SCTLR_EL1`,
+/// EL1 timer access, `SP_EL1` on the loader stack), and hands over
+/// `x0=load_addr`, `x1=image_len`, `x2=WINDOW_MIN`, `x3=WINDOW_MAX` at EL1 per
+/// `../docs/ENTRY_CONTRACT.md`.
 unsafe fn jump(entry: u64, load_addr: u64, image_len: u32, mem_len: u32) -> ! {
+    // `__stack_top`; the EL1 image lands on the loader's stack as a courtesy.
+    let stack_top = loader_bounds().1;
     unsafe {
         asm!("msr daifset, #0xf"); // mask D, A, I, F
         // Clear the declared BSS tail so the image's zero-init statics are zero
@@ -247,16 +252,34 @@ unsafe fn jump(entry: u64, load_addr: u64, image_len: u32, mem_len: u32) -> ! {
         // Clean the full footprint — image plus the just-zeroed tail — so the
         // stores are visible to instruction fetch and to the payload's reads.
         clean_dcache(load_addr, load_addr + u64::from(mem_len));
+        // EL1 setup values, precomputed so the `noreturn` asm needs no scratch:
+        let hcr_el2: u64 = 1 << 31; // RW = 1: EL1 executes in AArch64
+        let cnthctl_el2: u64 = 0b11; // EL1PCTEN | EL1PCEN: EL1 may read the timers
+        let sctlr_el1: u64 = 0x30d0_0800; // MMU/caches off, architectural RES1 bits
+        let spsr_el2: u64 = 0x3c5; // return to EL1h with DAIF masked
         asm!(
             "ic iallu",  // invalidate all I-cache to PoU
             "dsb sy",
             "isb",
-            "br {entry}",
+            // Drop EL2 -> EL1 (AArch64) and ERET into the image.
+            "msr  hcr_el2, {hcr}",
+            "msr  cnthctl_el2, {cnthctl}",
+            "msr  cntvoff_el2, xzr",
+            "msr  sctlr_el1, {sctlr}",
+            "msr  sp_el1, {stack}",     // EL1 lands on the loader's stack
+            "msr  spsr_el2, {spsr}",
+            "msr  elr_el2, {entry}",    // return into the image entry at EL1
+            "eret",
+            hcr = in(reg) hcr_el2,
+            cnthctl = in(reg) cnthctl_el2,
+            sctlr = in(reg) sctlr_el1,
+            spsr = in(reg) spsr_el2,
+            stack = in(reg) stack_top,
             entry = in(reg) entry,
             in("x0") load_addr,
             in("x1") u64::from(image_len),
-            in("x2") 0u64,
-            in("x3") 0u64,
+            in("x2") WINDOW_MIN,
+            in("x3") WINDOW_MAX,
             options(noreturn, nostack),
         )
     }

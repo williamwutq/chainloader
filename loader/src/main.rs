@@ -46,7 +46,19 @@ _start:
     b.hs    4f
     str     xzr, [x1], #8
     b       3b
-4:  bl      loader_main
+4:  // Enable FP/SIMD (NEON) so compiled SIMD in the loader — and the payload it
+    // hands off to — does not trap. At EL2 the trap is CPTR_EL2.TFP; CPACR_EL1
+    // covers any later execution at EL1/EL0.
+    mrs     x0, CurrentEL
+    cmp     x0, #(2 << 2)          // running at EL2?
+    b.ne    6f
+    mrs     x0, cptr_el2
+    bic     x0, x0, #(1 << 10)     // CPTR_EL2.TFP = 0: do not trap FP/SIMD at EL2
+    msr     cptr_el2, x0
+6:  mov     x0, #(3 << 20)         // CPACR_EL1.FPEN = 0b11: no trap at EL1/EL0
+    msr     cpacr_el1, x0
+    isb
+    bl      loader_main
 5:  wfe                            // loader_main must not return; park if it does
     b       5b
 "#
