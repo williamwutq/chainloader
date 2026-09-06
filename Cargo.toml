@@ -1,0 +1,35 @@
+# Workspace root.
+#
+# Only the host-buildable crates are workspace members, so `cargo build`,
+# `cargo test`, and `cargo clippy` at the root operate on the host target
+# without tripping over the bare-metal loader. The `loader` and
+# `payload-example` packages are excluded: each carries its own
+# `.cargo/config.toml` pinning `aarch64-unknown-none`, and building them for
+# the host is meaningless. They still depend on `chainloader-protocol` by path,
+# which Cargo permits across the member boundary.
+[workspace]
+resolver = "3"
+members = ["chainloader-protocol", "cargo-pi"]
+exclude = ["loader", "payload-example"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["William Wu <williamwutq@gmail.com>", "Claude <claude@anthropic.com>"]
+license = "MIT"
+repository = "https://github.com/williamwutq/chainloader"
+
+# Shared lint policy. Each crate opts in with `[lints] workspace = true`.
+[workspace.lints.rust]
+missing_docs = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+# The protocol crate is shared by both the host tool and the bare-metal loader,
+# so pin it once here.
+[workspace.dependencies]
+chainloader-protocol = { path = "chainloader-protocol", version = "0.1.0", default-features = false }

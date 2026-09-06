@@ -1,0 +1,9 @@
+/target
+**/target
+
+# macOS metadata.
+._*
+.DS_Store
+
+# Built loader/payload image artifacts produced by `objcopy`.
+*.img
