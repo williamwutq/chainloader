@@ -19,8 +19,11 @@ pub(crate) struct Image {
     pub load_addr: u64,
     /// Offset from `load_addr` to the entry point.
     pub entry_off: u32,
-    /// The raw bytes to write to RAM.
+    /// The raw bytes to write to RAM (the file-backed content).
     pub bytes: Vec<u8>,
+    /// Total in-memory footprint, including the BSS tail beyond `bytes` that the
+    /// loader zero-fills. Equals `bytes.len()` when the image has no BSS.
+    pub mem_len: u32,
     /// CRC-32 of `bytes`, for the header.
     pub crc32: u32,
 }
@@ -30,8 +33,8 @@ pub(crate) fn build(cfg: &Config) -> Result<Image> {
     let exe = cargo_build(cfg)?;
     let data = std::fs::read(&exe).map_err(|e| format!("reading {}: {e}", exe.display()))?;
 
-    let (load_addr, entry_off, bytes) = if is_elf(&data) {
-        let (base, entry, image) = flatten_elf(&data)?;
+    let (load_addr, entry_off, mem_len, bytes) = if is_elf(&data) {
+        let (base, entry, mem_len, image) = flatten_elf(&data)?;
         if cfg.load_addr != crate::config::DEFAULT_LOAD_ADDR && cfg.load_addr != base {
             eprintln!(
                 "cargo-pi: warning: configured load-address {:#x} differs from the ELF's \
@@ -40,9 +43,11 @@ pub(crate) fn build(cfg: &Config) -> Result<Image> {
                 cfg.load_addr
             );
         }
-        (base, entry, image)
+        (base, entry, mem_len, image)
     } else {
-        (cfg.load_addr, cfg.entry_off, data)
+        // A raw binary carries no BSS information: its footprint is its bytes.
+        let mem_len = u32::try_from(data.len()).map_err(|_| "image too large")?;
+        (cfg.load_addr, cfg.entry_off, mem_len, data)
     };
 
     let crc32 = chainloader_protocol::crc32(&bytes);
@@ -50,6 +55,7 @@ pub(crate) fn build(cfg: &Config) -> Result<Image> {
         load_addr,
         entry_off,
         bytes,
+        mem_len,
         crc32,
     })
 }
@@ -121,11 +127,13 @@ const PH_TYPE: usize = 0;
 const PH_OFFSET: usize = 8;
 const PH_PADDR: usize = 24;
 const PH_FILESZ: usize = 32;
+const PH_MEMSZ: usize = 40;
 
-/// Flattens an ELF64 into `(link_base, entry_offset, bytes)` the way
-/// `objcopy -O binary` does: `PT_LOAD` segments laid out by physical address,
-/// with BSS (`memsz` beyond `filesz`) left implicit for the payload to clear.
-fn flatten_elf(data: &[u8]) -> Result<(u64, u32, Vec<u8>)> {
+/// Flattens an ELF64 into `(link_base, entry_offset, mem_len, bytes)`. The
+/// `bytes` are the file-backed content laid out by physical address the way
+/// `objcopy -O binary` does; `mem_len` is the full memory footprint including
+/// the BSS tail (`memsz` beyond `filesz`), which the loader zero-fills at entry.
+fn flatten_elf(data: &[u8]) -> Result<(u64, u32, u32, Vec<u8>)> {
     // e_ident[4] = EI_CLASS (2 = 64-bit), e_ident[5] = EI_DATA (1 = LE).
     if data.get(4) != Some(&2) || data.get(5) != Some(&1) {
         return Err("only 64-bit little-endian ELF images are supported".into());
@@ -138,17 +146,25 @@ fn flatten_elf(data: &[u8]) -> Result<(u64, u32, Vec<u8>)> {
     let mut segments = Vec::new();
     let mut base = u64::MAX;
     let mut top = 0u64;
+    let mut mem_top = 0u64;
     for i in 0..phnum {
         let ph = phoff + i * phentsize;
         if rd_u32(data, ph + PH_TYPE)? != PT_LOAD {
             continue;
         }
-        let offset = usize::try_from(rd_u64(data, ph + PH_OFFSET)?).map_err(|_| "bad p_offset")?;
+        let memsz = rd_u64(data, ph + PH_MEMSZ)?;
+        if memsz == 0 {
+            continue;
+        }
         let paddr = rd_u64(data, ph + PH_PADDR)?;
+        // A pure-BSS segment (filesz 0) still extends the memory footprint even
+        // though it contributes no file bytes.
+        mem_top = mem_top.max(paddr + memsz);
         let filesz = usize::try_from(rd_u64(data, ph + PH_FILESZ)?).map_err(|_| "bad p_filesz")?;
         if filesz == 0 {
             continue;
         }
+        let offset = usize::try_from(rd_u64(data, ph + PH_OFFSET)?).map_err(|_| "bad p_offset")?;
         let src = data
             .get(offset..offset + filesz)
             .ok_or("ELF segment extends past end of file")?;
@@ -168,8 +184,11 @@ fn flatten_elf(data: &[u8]) -> Result<(u64, u32, Vec<u8>)> {
         image[start..start + src.len()].copy_from_slice(src);
     }
 
+    // `mem_top >= top` since every segment's memsz >= its filesz, so the footprint
+    // is never smaller than the transferred image.
+    let mem_len = u32::try_from(mem_top - base).map_err(|_| "image too large")?;
     let entry_off = u32::try_from(entry - base).map_err(|_| "entry offset out of range")?;
-    Ok((base, entry_off, image))
+    Ok((base, entry_off, mem_len, image))
 }
 
 fn rd_u16(d: &[u8], off: usize) -> Result<u16> {
@@ -191,8 +210,29 @@ fn rd_u64(d: &[u8], off: usize) -> Result<u64> {
 mod tests {
     use super::*;
 
-    /// One `PT_LOAD` segment: `(paddr, bytes)`.
-    struct Seg(u64, &'static [u8]);
+    /// One `PT_LOAD` segment for the builder.
+    struct Seg {
+        paddr: u64,
+        data: &'static [u8],
+        /// `p_memsz`; a value above `data.len()` gives the segment a BSS tail.
+        memsz: u64,
+    }
+
+    impl Seg {
+        /// A segment whose memory size equals its file size (no BSS).
+        fn new(paddr: u64, data: &'static [u8]) -> Self {
+            Self {
+                paddr,
+                data,
+                memsz: data.len() as u64,
+            }
+        }
+
+        /// A segment with a BSS tail: `memsz` bytes in memory, `data` on file.
+        fn bss(paddr: u64, data: &'static [u8], memsz: u64) -> Self {
+            Self { paddr, data, memsz }
+        }
+    }
 
     /// Builds a minimal ELF64 (LE) with `e_entry` and the given `PT_LOAD`
     /// segments laid out contiguously in the file after the program headers.
@@ -202,7 +242,7 @@ mod tests {
         let ph_off = EH;
         let mut data_off = EH + PH * segs.len();
 
-        let mut out = vec![0u8; data_off + segs.iter().map(|s| s.1.len()).sum::<usize>()];
+        let mut out = vec![0u8; data_off + segs.iter().map(|s| s.data.len()).sum::<usize>()];
         out[..4].copy_from_slice(b"\x7FELF");
         out[4] = 2; // 64-bit
         out[5] = 1; // little-endian
@@ -218,11 +258,11 @@ mod tests {
             let ph = ph_off + i * PH;
             out[ph..ph + 4].copy_from_slice(&PT_LOAD.to_le_bytes());
             out[ph + 8..ph + 16].copy_from_slice(&(data_off as u64).to_le_bytes()); // p_offset
-            out[ph + 24..ph + 32].copy_from_slice(&seg.0.to_le_bytes()); // p_paddr
-            out[ph + 32..ph + 40].copy_from_slice(&(seg.1.len() as u64).to_le_bytes()); // p_filesz
-            out[ph + 40..ph + 48].copy_from_slice(&(seg.1.len() as u64).to_le_bytes()); // p_memsz
-            out[data_off..data_off + seg.1.len()].copy_from_slice(seg.1);
-            data_off += seg.1.len();
+            out[ph + 24..ph + 32].copy_from_slice(&seg.paddr.to_le_bytes()); // p_paddr
+            out[ph + 32..ph + 40].copy_from_slice(&(seg.data.len() as u64).to_le_bytes()); // p_filesz
+            out[ph + 40..ph + 48].copy_from_slice(&seg.memsz.to_le_bytes()); // p_memsz
+            out[data_off..data_off + seg.data.len()].copy_from_slice(seg.data);
+            data_off += seg.data.len();
         }
         out
     }
@@ -236,10 +276,14 @@ mod tests {
 
     #[test]
     fn flattens_single_segment_with_entry_offset() {
-        let elf = build_elf(0x0020_0002, &[Seg(0x0020_0000, &[0xDE, 0xAD, 0xBE, 0xEF])]);
-        let (base, entry_off, bytes) = flatten_elf(&elf).unwrap();
+        let elf = build_elf(
+            0x0020_0002,
+            &[Seg::new(0x0020_0000, &[0xDE, 0xAD, 0xBE, 0xEF])],
+        );
+        let (base, entry_off, mem_len, bytes) = flatten_elf(&elf).unwrap();
         assert_eq!(base, 0x0020_0000);
         assert_eq!(entry_off, 2);
+        assert_eq!(mem_len, 4); // no BSS: footprint equals the file bytes
         assert_eq!(bytes, vec![0xDE, 0xAD, 0xBE, 0xEF]);
     }
 
@@ -249,17 +293,40 @@ mod tests {
         // between them must be zero-filled, matching `objcopy -O binary`.
         let elf = build_elf(
             0x0020_0000,
-            &[Seg(0x0020_0000, &[1, 2, 3, 4]), Seg(0x0020_0008, &[5, 6])],
+            &[
+                Seg::new(0x0020_0000, &[1, 2, 3, 4]),
+                Seg::new(0x0020_0008, &[5, 6]),
+            ],
         );
-        let (base, entry_off, bytes) = flatten_elf(&elf).unwrap();
+        let (base, entry_off, mem_len, bytes) = flatten_elf(&elf).unwrap();
         assert_eq!(base, 0x0020_0000);
         assert_eq!(entry_off, 0);
+        assert_eq!(mem_len, 10);
         assert_eq!(bytes, vec![1, 2, 3, 4, 0, 0, 0, 0, 5, 6]);
     }
 
     #[test]
+    fn bss_tail_extends_mem_len_but_not_the_bytes() {
+        // A data+BSS segment: 4 file bytes at 0x200000, 16 bytes in memory. The
+        // transferred image stays 4 bytes; mem_len covers the 12-byte BSS tail
+        // the loader will zero. A trailing pure-BSS segment extends it further.
+        let elf = build_elf(
+            0x0020_0000,
+            &[
+                Seg::bss(0x0020_0000, &[1, 2, 3, 4], 16),
+                Seg::bss(0x0020_0010, &[], 8),
+            ],
+        );
+        let (base, entry_off, mem_len, bytes) = flatten_elf(&elf).unwrap();
+        assert_eq!(base, 0x0020_0000);
+        assert_eq!(entry_off, 0);
+        assert_eq!(bytes, vec![1, 2, 3, 4]); // only file-backed content is sent
+        assert_eq!(mem_len, 0x18); // 0x200018 - 0x200000
+    }
+
+    #[test]
     fn rejects_non_64bit_le() {
-        let mut elf = build_elf(0x1000, &[Seg(0x1000, &[0])]);
+        let mut elf = build_elf(0x1000, &[Seg::new(0x1000, &[0])]);
         elf[4] = 1; // 32-bit
         assert!(flatten_elf(&elf).is_err());
     }

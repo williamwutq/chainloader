@@ -59,15 +59,21 @@ All fields little-endian. Offsets are within the payload.
 | 28  | 2    | `max_chunk`      | largest `DATA` chunk the loader accepts       |
 | 30  | 2    | `reserved`       | 0                                             |
 
-### HEADER (host → Pi) — 24 bytes
+### HEADER (host → Pi) — 28 bytes
 
-| off | size | field         | meaning                                           |
-|-----|------|---------------|---------------------------------------------------|
-| 0   | 8    | `load_addr`   | physical address to load the image at             |
-| 8   | 4    | `image_len`   | total image length in bytes                       |
-| 12  | 4    | `image_crc32` | CRC-32 of the whole image (end-to-end integrity)  |
-| 16  | 4    | `entry_off`   | byte offset added to `load_addr` for the entry PC |
-| 20  | 4    | `flags`       | 0 (reserved)                                      |
+| off | size | field         | meaning                                                 |
+|-----|------|---------------|---------------------------------------------------------|
+| 0   | 8    | `load_addr`   | physical address to load the image at                   |
+| 8   | 4    | `image_len`   | transferred image length in bytes (file-backed content) |
+| 12  | 4    | `mem_len`     | total memory footprint incl. the zero-filled BSS tail   |
+| 16  | 4    | `image_crc32` | CRC-32 of the transferred image (end-to-end integrity)  |
+| 20  | 4    | `entry_off`   | byte offset added to `load_addr` for the entry PC       |
+| 24  | 4    | `flags`       | 0 (reserved)                                            |
+
+`mem_len >= image_len`. The loader writes the `image_len` transferred bytes at
+`load_addr`, then zero-fills `[load_addr + image_len, load_addr + mem_len)` — the
+image's BSS — before boot. It validates the full `mem_len` footprint against the
+window and its own extent, not just the transferred bytes.
 
 ### DATA (host → Pi) — 4 + chunk bytes
 
@@ -117,9 +123,11 @@ HOST                          PI
   retries trivial: on `ERROR` or timeout the host resends the same `DATA`.
 - `ACK.next_offset` is the total bytes accepted so far, i.e. the offset the
   loader expects in the next `DATA`. It lets the host resync after a retry.
-- The loader validates `HEADER` bounds/alignment/overlap *before* accepting any
-  `DATA`, and verifies `image_crc32` over the assembled image *before* honoring
-  `BOOT`. `BOOT` with no verified image returns `ERROR(NoImage)`.
+- The loader validates `HEADER` bounds/alignment/overlap (over the full
+  `mem_len` footprint) *before* accepting any `DATA`, and verifies `image_crc32`
+  over the assembled image *before* honoring `BOOT`. On `BOOT` it zero-fills the
+  declared BSS tail `[image_len, mem_len)` before branching. `BOOT` with no
+  verified image returns `ERROR(NoImage)`.
 
 ## Versioning
 

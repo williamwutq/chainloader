@@ -35,16 +35,28 @@ also valid.
 The image arrives via ordinary stores while the I-cache may hold stale lines for
 the destination range. Before branching, the loader:
 
-1. `DSB SY` — ensure all image stores have completed.
-2. Clean the data cache to the point of unification over
-   `[load_addr, load_addr + image_len)` (or clean+invalidate to PoC if caches
-   are on), so instruction fetch sees the written bytes.
-3. Invalidate the instruction cache (`IC IALLU`) and the branch predictor.
-4. `DSB SY; ISB` — complete maintenance and flush the pipeline.
-5. Branch to `load_addr + entry_off`.
+1. Zero-fill the declared BSS tail `[load_addr + image_len, load_addr + mem_len)`
+   so the image's zero-initialized statics are clear (and free of stale bytes
+   from a previous load).
+2. `DSB SY` — ensure all image and BSS stores have completed.
+3. Clean the data cache to the point of unification over the full footprint
+   `[load_addr, load_addr + mem_len)` (or clean+invalidate to PoC if caches are
+   on), so instruction fetch sees the written bytes.
+4. Invalidate the instruction cache (`IC IALLU`) and the branch predictor.
+5. `DSB SY; ISB` — complete maintenance and flush the pipeline.
+6. Branch to `load_addr + entry_off`.
 
 If the MMU and caches are off throughout (the conservative default), steps 2–4
 still run to cover the case where firmware left caches enabled.
+
+## Memory image at entry
+
+The loader writes the `image_len` transferred bytes at `load_addr` and zero-fills
+the declared BSS tail `[load_addr + image_len, load_addr + mem_len)`, where
+`mem_len` is the image's full memory footprint. So a payload's zero-initialized
+statics are already zero at entry — it does **not** need to clear its own BSS.
+(`mem_len` is derived by the host from the ELF; a raw binary has
+`mem_len == image_len` and no zero-filled tail.)
 
 ## What the loader does *not* do
 

@@ -181,9 +181,14 @@ impl Ready {
 pub struct ImageHeader {
     /// Physical address to load the image at.
     pub load_addr: u64,
-    /// Total image length in bytes.
+    /// Length of the transferred image in bytes (the file-backed content).
     pub image_len: u32,
-    /// CRC-32 of the whole image, for end-to-end integrity.
+    /// Total in-memory footprint in bytes, including the zero-filled BSS tail
+    /// beyond `image_len`. The loader clears `[image_len, mem_len)` before entry,
+    /// so zero-initialized statics are clear when the image runs. Must be
+    /// `>= image_len`; equal when the image has no BSS.
+    pub mem_len: u32,
+    /// CRC-32 of the transferred image (`image_len` bytes), for end-to-end integrity.
     pub image_crc32: u32,
     /// Byte offset added to `load_addr` for the entry PC.
     pub entry_off: u32,
@@ -193,7 +198,7 @@ pub struct ImageHeader {
 
 impl ImageHeader {
     /// Encoded length in bytes.
-    pub const LEN: usize = 24;
+    pub const LEN: usize = 28;
 
     /// Serializes to its fixed little-endian byte layout.
     #[inline]
@@ -202,9 +207,10 @@ impl ImageHeader {
         let mut out = [0u8; Self::LEN];
         out[0..8].copy_from_slice(&self.load_addr.to_le_bytes());
         out[8..12].copy_from_slice(&self.image_len.to_le_bytes());
-        out[12..16].copy_from_slice(&self.image_crc32.to_le_bytes());
-        out[16..20].copy_from_slice(&self.entry_off.to_le_bytes());
-        out[20..24].copy_from_slice(&self.flags.to_le_bytes());
+        out[12..16].copy_from_slice(&self.mem_len.to_le_bytes());
+        out[16..20].copy_from_slice(&self.image_crc32.to_le_bytes());
+        out[20..24].copy_from_slice(&self.entry_off.to_le_bytes());
+        out[24..28].copy_from_slice(&self.flags.to_le_bytes());
         out
     }
 
@@ -219,9 +225,10 @@ impl ImageHeader {
         Ok(Self {
             load_addr: rd_u64(bytes, 0),
             image_len: rd_u32(bytes, 8),
-            image_crc32: rd_u32(bytes, 12),
-            entry_off: rd_u32(bytes, 16),
-            flags: rd_u32(bytes, 20),
+            mem_len: rd_u32(bytes, 12),
+            image_crc32: rd_u32(bytes, 16),
+            entry_off: rd_u32(bytes, 20),
+            flags: rd_u32(bytes, 24),
         })
     }
 }
@@ -460,7 +467,7 @@ mod tests {
         // Must match docs/PROTOCOL.md.
         assert_eq!(Hello::LEN, 4);
         assert_eq!(Ready::LEN, 32);
-        assert_eq!(ImageHeader::LEN, 24);
+        assert_eq!(ImageHeader::LEN, 28);
         assert_eq!(Ack::LEN, 4);
         assert_eq!(ErrorMsg::LEN, 6);
         assert_eq!(DataFrame::HEADER, 4);
@@ -496,6 +503,7 @@ mod tests {
         let m = ImageHeader {
             load_addr: 0x0020_0000,
             image_len: 4096,
+            mem_len: 8192,
             image_crc32: 0xDEAD_BEEF,
             entry_off: 0,
             flags: 0,

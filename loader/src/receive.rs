@@ -110,10 +110,18 @@ fn handle_frame(uart: &Uart, transfer: &mut Option<Transfer>, ty: FrameType, pay
             Some(t) if t.verified => {
                 send_ack(uart, t.received);
                 let entry = t.header.load_addr + u64::from(t.header.entry_off);
-                // SAFETY: the image was validated (in-window, non-overlapping,
-                // aligned) and its CRC verified; `jump` establishes the
-                // documented entry contract before branching.
-                unsafe { jump(entry, t.header.load_addr, t.header.image_len) }
+                // SAFETY: the image was validated (footprint in-window,
+                // non-overlapping, aligned) and its CRC verified; `jump` zeroes
+                // the BSS tail and establishes the documented entry contract
+                // before branching.
+                unsafe {
+                    jump(
+                        entry,
+                        t.header.load_addr,
+                        t.header.image_len,
+                        t.header.mem_len,
+                    )
+                }
             }
             _ => send_error(uart, ErrorCode::NoImage, 0),
         },
@@ -172,6 +180,10 @@ fn validate_header(h: &ImageHeader) -> Result<(), ErrorCode> {
     if h.image_len == 0 {
         return Err(ErrorCode::BadLength);
     }
+    if h.mem_len < h.image_len {
+        // The memory footprint cannot be smaller than the transferred bytes.
+        return Err(ErrorCode::BadLength);
+    }
     if h.image_len > MAX_IMAGE_LEN {
         return Err(ErrorCode::ImageTooLarge);
     }
@@ -179,8 +191,11 @@ fn validate_header(h: &ImageHeader) -> Result<(), ErrorCode> {
         return Err(ErrorCode::AddrMisaligned);
     }
     let start = h.load_addr;
+    // The full in-memory footprint — the transferred image plus the BSS tail the
+    // loader zero-fills — must fit the window and clear the loader, not just the
+    // transferred bytes.
     let end = start
-        .checked_add(u64::from(h.image_len))
+        .checked_add(u64::from(h.mem_len))
         .ok_or(ErrorCode::AddrOutOfRange)?;
     if start < WINDOW_MIN || end > WINDOW_MAX {
         return Err(ErrorCode::AddrOutOfRange);
@@ -214,14 +229,24 @@ unsafe fn write_image(load_addr: u64, offset: u32, chunk: &[u8]) {
 ///
 /// # Safety
 ///
-/// `entry` must point at a validated, CRC-verified image loaded at `load_addr`.
-/// Masks interrupts, makes the written image coherent with instruction fetch,
-/// and hands over `x0=load_addr`, `x1=image_len`, `x2=x3=0` per
-/// `../docs/ENTRY_CONTRACT.md`.
-unsafe fn jump(entry: u64, load_addr: u64, image_len: u32) -> ! {
+/// `entry` must point at a validated, CRC-verified image loaded at `load_addr`,
+/// with `image_len <= mem_len` and the footprint `[load_addr, load_addr+mem_len)`
+/// proven writable by [`validate_header`]. Masks interrupts, zero-fills the BSS
+/// tail `[load_addr+image_len, load_addr+mem_len)`, makes the whole footprint
+/// coherent with instruction fetch, and hands over `x0=load_addr`,
+/// `x1=image_len`, `x2=x3=0` per `../docs/ENTRY_CONTRACT.md`.
+unsafe fn jump(entry: u64, load_addr: u64, image_len: u32, mem_len: u32) -> ! {
     unsafe {
         asm!("msr daifset, #0xf"); // mask D, A, I, F
-        clean_dcache(load_addr, load_addr + u64::from(image_len));
+        // Clear the declared BSS tail so the image's zero-init statics are zero
+        // at entry (and free of stale bytes from a previous load).
+        zero_bss(
+            load_addr + u64::from(image_len),
+            load_addr + u64::from(mem_len),
+        );
+        // Clean the full footprint — image plus the just-zeroed tail — so the
+        // stores are visible to instruction fetch and to the payload's reads.
+        clean_dcache(load_addr, load_addr + u64::from(mem_len));
         asm!(
             "ic iallu",  // invalidate all I-cache to PoU
             "dsb sy",
@@ -234,6 +259,22 @@ unsafe fn jump(entry: u64, load_addr: u64, image_len: u32) -> ! {
             in("x3") 0u64,
             options(noreturn, nostack),
         )
+    }
+}
+
+/// Zero-fills `[start, end)` with volatile byte stores. A no-op when the image
+/// declares no BSS (`start == end`).
+///
+/// # Safety
+///
+/// `[start, end)` must lie within the validated, writable footprint.
+unsafe fn zero_bss(start: u64, end: u64) {
+    let mut addr = start as usize;
+    let end = end as usize;
+    while addr < end {
+        // SAFETY: caller guarantees the whole range is valid, writable RAM.
+        unsafe { write_volatile(addr as *mut u8, 0) };
+        addr += 1;
     }
 }
 

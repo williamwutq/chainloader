@@ -58,6 +58,7 @@ impl Session {
         let header = ImageHeader {
             load_addr: image.load_addr,
             image_len: len,
+            mem_len: image.mem_len,
             image_crc32: image.crc32,
             entry_off: image.entry_off,
             flags: 0,
@@ -220,10 +221,12 @@ fn preflight(ready: &Ready, image: &Image, len: u32) -> Result<()> {
         )
         .into());
     }
-    let end = image.load_addr + u64::from(len);
+    // Bound the full in-memory footprint (image + zero-filled BSS tail), not
+    // just the transferred bytes — the loader validates the same range.
+    let end = image.load_addr + u64::from(image.mem_len);
     if image.load_addr < ready.load_addr_min || end > ready.load_addr_max {
         return Err(format!(
-            "image [{:#x}, {end:#x}) is outside the loader's window [{:#x}, {:#x})",
+            "image footprint [{:#x}, {end:#x}) is outside the loader's window [{:#x}, {:#x})",
             image.load_addr, ready.load_addr_min, ready.load_addr_max
         )
         .into());
