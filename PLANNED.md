@@ -235,3 +235,44 @@ only add support, never break the working path.
   VideoCore GPIO expander rather than an ARM GPIO, so bare-metal can't drive it —
   detect and skip the blink instead of toggling a wrong pin.
 
+
+## `usb-transport` — USB CDC-ACM device transport on the OTG port
+
+**Crate:** `chainloader-loader` (plus a small `cargo-pi` touch-up).
+**Breaking change:** No — an alternative transport; the UART path stays.
+**Depends on:** `loader-hardware-bringup`.
+
+### Motivation
+
+The UART tops out near 11 KB/s and needs a 3.3 V USB-TTL adapter wired to the
+header. The Zero 2 W's micro-USB *data* port is a DWC2 OTG controller that can
+act as a USB device; presenting a CDC-ACM serial gadget gives a fast,
+single-cable, adapter-free link — and the host side is free, since macOS / Linux
+/ Windows bind their in-box CDC-ACM driver and it enumerates as an ordinary
+serial port.
+
+### Design
+
+The protocol and the receive state machine are transport-agnostic — they touch
+only `get_byte` / `put_byte` — so USB is a transport swap, not a rewrite. Extract
+a `ByteStream` trait over those two calls, implement it for the existing `Uart`
+and for a new `Usb` (DWC2 device mode + CDC-ACM), and select the active one
+behind the trait. The DWC2 register map and the CDC-ACM descriptors are already
+scaffolded in `loader/src/usb.rs` (unlinked); what remains is enumeration (EP0
+SETUP handling — `GET_DESCRIPTOR` / `SET_ADDRESS` / `SET_CONFIGURATION`) and the
+bulk IN/OUT FIFO transfers. The host barely changes: `cargo-pi`'s `discover.rs`
+already matches USB serial ports, so a CDC-ACM gadget is picked up like any
+adapter.
+
+### Open questions
+
+- **PHY speed.** Full speed on the internal serial PHY is simplest (~1 MB/s,
+  already ~100x the UART); high speed (480 Mbps) needs more PHY bring-up. Start
+  full speed.
+- **Interrupt vs polled.** No IRQ controller is configured, so the first cut
+  polls `GINTSTS` from the receive loop; interrupts can come later.
+- **Transport selection.** Auto-detect which link the host talks on first, or
+  configure it explicitly? Either way keep the UART as the always-available
+  early-boot / debug fallback.
+- **`ByteStream` trait.** The same seam the `hardening` entry wants for host-side
+  state-machine testing — extract it once and use it for both.

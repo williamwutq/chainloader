@@ -18,6 +18,8 @@ mod led;
 mod mailbox;
 mod receive;
 mod uart;
+// Scaffolding for the planned USB CDC-ACM transport; not yet wired in.
+mod usb;
 
 use core::arch::global_asm;
 use core::fmt::Write as _;
