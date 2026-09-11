@@ -14,6 +14,7 @@
 #![no_std]
 #![no_main]
 
+mod led;
 mod mailbox;
 mod receive;
 mod uart;
@@ -71,6 +72,11 @@ _start:
 /// (0 if none), forwarded to the loaded image. Must never return.
 #[unsafe(no_mangle)]
 pub extern "C" fn loader_main(dtb: u64) -> ! {
+    // Blink the ACT LED first: a visible sign the loader booted, even with no
+    // serial adapter attached. Left lit afterwards as a "waiting for host" light.
+    // SAFETY: boot core, first and only GPIO/LED user at startup.
+    unsafe { led::signal_alive(3) };
+
     let mut uart = Uart;
     // SAFETY: first and only UART user, running on the boot core at startup.
     unsafe {
