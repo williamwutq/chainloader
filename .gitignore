@@ -7,3 +7,6 @@
 
 # Built loader/payload image artifacts produced by `objcopy`.
 *.img
+
+# Original Raspberry Pi OS boot files, saved before installing the loader.
+/raspberry-pi-os/

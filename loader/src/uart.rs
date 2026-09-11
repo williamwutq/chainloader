@@ -9,11 +9,11 @@
 //! on hardware (see `../PLANNED.md`).
 //!
 //! Routing note: on the Bluetooth-equipped boards (Zero 2 W, Pi 3) the firmware
-//! wires PL011 to the on-board Bluetooth modem by default and hands the
-//! GPIO14/15 header pins the mini-UART, so `config.txt` must carry
-//! `dtoverlay=disable-bt` (or `miniuart-bt`) to route PL011 to the header pins
-//! where the USB-TTL adapter connects. The Pi 2 has no Bluetooth and needs no
-//! such overlay.
+//! wires PL011 to the on-board Bluetooth modem via GPIO32/33 by default. Rather
+//! than depend on a `dtoverlay=disable-bt` in `config.txt`, [`Uart::init`]
+//! returns GPIO32/33 to plain inputs itself, disconnecting the BT UART so PL011
+//! reaches only the GPIO14/15 header pins where the USB-TTL adapter connects.
+//! The Pi 2 has no Bluetooth and is unaffected.
 
 use core::ptr::{read_volatile, write_volatile};
 
@@ -24,7 +24,8 @@ use crate::mailbox;
 const PERIPHERAL_BASE: usize = 0x3F00_0000;
 
 const GPIO_BASE: usize = PERIPHERAL_BASE + 0x0020_0000;
-const GPFSEL1: usize = GPIO_BASE + 0x04;
+const GPFSEL1: usize = GPIO_BASE + 0x04; // GPIO10–19
+const GPFSEL3: usize = GPIO_BASE + 0x0C; // GPIO30–39 (the BT UART pins)
 const GPPUD: usize = GPIO_BASE + 0x94;
 const GPPUDCLK0: usize = GPIO_BASE + 0x98;
 
@@ -82,6 +83,17 @@ impl Uart {
             sel &= !((0b111 << 12) | (0b111 << 15));
             sel |= (0b100 << 12) | (0b100 << 15);
             write_volatile(GPFSEL1 as *mut u32, sel);
+
+            // Free PL011 from the on-board Bluetooth on BCM2837 boards (Pi 3 /
+            // Zero 2 W): the firmware routes it to GPIO32 (TXD0) / GPIO33 (RXD0,
+            // ALT3), and leaving GPIO33 on ALT3 makes it a second PL011 RXD
+            // source alongside GPIO15 above, garbling receive. Returning GPIO32
+            // and GPIO33 to plain inputs disconnects the BT UART, so the loader
+            // needs no `disable-bt` overlay. (Harmless on the Pi 2, which has no
+            // Bluetooth: those pins are inputs already.)
+            let mut sel3 = read_volatile(GPFSEL3 as *const u32);
+            sel3 &= !(0b111_111 << 6); // GPIO32 = FSEL[8:6], GPIO33 = FSEL[11:9] -> input
+            write_volatile(GPFSEL3 as *mut u32, sel3);
 
             // Disable pull-up/down on pins 14 and 15.
             write_volatile(GPPUD as *mut u32, 0);

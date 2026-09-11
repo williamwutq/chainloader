@@ -39,10 +39,10 @@ cache-maintenance sequence are written from the datasheet and need measuring.
 
 ### Design
 
-Flash `kernel8.img` with `arm_64bit=1`, `enable_uart=1`, and
-`dtoverlay=disable-bt` in `config.txt` (the overlay frees PL011 from the Zero
-2 W's on-board Bluetooth so it reaches the GPIO14/15 header pins), confirm the
-banner over a USB-UART adapter, then drive a real load with `cargo pi load` from
+Flash `kernel8.img` with `arm_64bit=1` and `enable_uart=1` in `config.txt` (the
+loader frees PL011 from the Zero 2 W's on-board Bluetooth itself, by returning
+GPIO32/33 to inputs, so no `disable-bt` overlay is needed), confirm the banner
+over a USB-UART adapter, then drive a real load with `cargo pi load` from
 `payload-example/` — its `[payload-example] running` banner (EL, `x0`–`x4`, an
 FP op) is the end-to-end success signal. The decisions that cannot be settled
 off-hardware:
