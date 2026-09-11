@@ -24,7 +24,7 @@ State `No` explicitly rather than omitting a metadata field.
 
 ---
 
-## `loader-hardware-bringup` — validate the loader on a real Pi Zero 2 W (0.1.0)
+## `loader-hardware-bringup` — validate the loader on a real Pi Zero 2 W
 
 **Crate:** `chainloader-loader`.
 **Breaking change:** No — the loader has no public API.
@@ -69,7 +69,7 @@ off-hardware:
   What remains is confirming on hardware that the query returns the expected
   size.
 
-## `console-raw-mode` — raw terminal for the post-load console (0.2.0)
+## `console-raw-mode` — raw terminal for the post-load console
 
 **Crate:** `cargo-pi`.
 **Breaking change:** No.
@@ -93,7 +93,7 @@ Unix; weigh a tiny dependency against a small `libc`-free `ioctl` wrapper.
   minimal hand-rolled `tcsetattr` via `libc` is enough. Leaning hand-rolled to
   keep the dependency set small, consistent with the rest of the tool.
 
-## `hardening` — malformed-input and repeat-load test suite (0.1.0)
+## `hardening` — malformed-input and repeat-load test suite
 
 **Crate:** workspace.
 **Breaking change:** No.
@@ -120,7 +120,7 @@ a load twice to prove the loader returns to `READY`. Fuzz the decoder with
   against an in-memory pipe, or rely on QEMU (`-M raspi2`). Leaning: the trait,
   since it also keeps the state machine unit-testable.
 
-## `smp-secondary-bringup` — bring secondary cores to the core-0 entry state (0.2.0)
+## `smp-secondary-bringup` — bring secondary cores to the core-0 entry state
 
 **Crate:** `chainloader-loader`.
 **Breaking change:** No — extends the entry contract; single-core payloads are
@@ -162,7 +162,7 @@ off the default at once). The full register map is in `docs/ENTRY_GOAL.md`.
 - **Firmware path.** Leave the firmware spin-table usable as well, or fully take
   the cores over? Taking over is cleaner but makes the loader own all four cores.
 
-## `hvc-reload-service` — kernel-requested reload without a power cycle (0.3.0)
+## `hvc-reload-service` — kernel-requested reload without a power cycle
 
 **Crate:** `chainloader-loader`.
 **Breaking change:** No — additive; payloads that never `HVC` are unaffected.
@@ -203,3 +203,35 @@ even v1 needs a return path: the dispatcher must preserve any caller GPR it read
   convention when the first such service appears.
 - **Multi-core.** If secondaries are running when a core reloads, they must be
   quiesced (re-parked) first. Interacts with `smp-secondary-bringup`.
+
+## `board-detect` — support the BCM283x (`0x3F00_0000`) family
+
+**Crate:** `chainloader-loader`.
+**Breaking change:** No — additive; the current Zero 2 W path stays the default.
+**Depends on:** `loader-hardware-bringup`.
+
+### Motivation
+
+Beyond the shared `0x3F00_0000` peripheral base, the loader hardcodes Zero 2 W
+specifics: GPIO29 (active-low) for the ACT LED, and the GPIO32/33 Bluetooth
+unroute. Sibling boards on the same base — Pi 2 (no Bluetooth), Pi 3, other
+Zero 2 variants — differ in the LED pin/polarity and whether the unroute is
+needed. Scoping to this one family already covers the boards in reach; the base
+is a constant, so a board just needs the right per-model details filled in.
+
+### Design
+
+The peripheral base is fixed for the whole family, so the mailbox (at
+`base + 0xB880`) is always addressable — no bootstrapping needed. Query
+`GET_BOARD_REVISION` (0x0001_0002) at boot for the exact model, then pick the ACT
+LED pin/polarity and whether to run the Bluetooth unroute from a small board
+table. `GET_ARM_MEMORY` (already used) sizes the writable window. Unknown boards
+fall back to the current Zero 2 W profile with the LED disabled, so detection can
+only add support, never break the working path.
+
+### Open questions
+
+- **Inaccessible LEDs.** Some boards (e.g. Pi 3B) wire the ACT LED to the
+  VideoCore GPIO expander rather than an ARM GPIO, so bare-metal can't drive it —
+  detect and skip the blink instead of toggling a wrong pin.
+
