@@ -111,11 +111,14 @@ pub fn run(uart: Uart, dtb: u64) -> ! {
     let mut decoder = Decoder::new();
     let mut transfer: Option<Transfer> = None;
 
-    // Until the host first speaks, emit a periodic ASCII heartbeat so a human
+    // Until a real host speaks, emit a periodic ASCII heartbeat so a human
     // bringing up the serial link has a continuous stream to catch and verify
-    // the baud against — a one-shot boot banner is easy to miss with hand-held
-    // wires. The first inbound byte silences it for good, so it never
-    // interleaves with the binary protocol once a real host is talking.
+    // the baud against — a one-shot boot banner is easy to miss. Only a fully
+    // decoded, CRC-checked frame counts as contact and silences the heartbeat:
+    // a floating or noisy RX line (common once the header is soldered) delivers
+    // stray bytes that must NOT be mistaken for a host, or the heartbeat dies the
+    // moment the wire is connected. Once a host is really talking, the beat stays
+    // off and never interleaves with the binary protocol.
     let mut contacted = false;
     let mut last_beat = now_us();
 
@@ -128,11 +131,17 @@ pub fn run(uart: Uart, dtb: u64) -> ! {
             core::hint::spin_loop();
             continue;
         };
-        contacted = true;
         match decoder.push(byte) {
             Decoded::None => {}
-            Decoded::Error(e) => send_error(&uart, decode_error_code(e), 0),
+            // Before contact, treat a decode error as line noise and stay quiet;
+            // only answer once a real peer has framed at least one valid message.
+            Decoded::Error(e) => {
+                if contacted {
+                    send_error(&uart, decode_error_code(e), 0);
+                }
+            }
             Decoded::Frame(ty) => {
+                contacted = true;
                 handle_frame(&uart, &mut transfer, ty, decoder.payload(), limits, dtb)
             }
         }
