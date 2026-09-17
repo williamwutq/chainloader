@@ -1,31 +1,32 @@
 # AArch64 entry goal
 
 The **aspirational** entry state — what the loader aims to guarantee once the
-planned work lands (secondary-core bring-up and the EL2 reload service). It is
-**not implemented**; [`ENTRY_CONTRACT.md`](ENTRY_CONTRACT.md) is the current,
-normative contract. This file fixes only the target *state* (the tables), so a
-kernel can be pre-planned against the eventual ABI — not how the loader will get
-there. Rows marked **†** differ from today.
+remaining planned work lands (the EL2 reload service; `x5`/`x6` semantics).
+Secondary-core bring-up has landed, so much of this is now real;
+[`ENTRY_CONTRACT.md`](ENTRY_CONTRACT.md) remains the current, normative contract.
+This file fixes only the target *state* (the tables), so a kernel can be
+pre-planned against the eventual ABI — not how the loader will get there. Rows
+marked **†** still differ from today.
 
 ## Processor state at entry (every core)
 
 The boot core reaches this at handoff; each secondary reaches it when released —
 every core enters the payload in the same state.
 
-| Property        | Value at entry                                                                        |
-|-----------------|---------------------------------------------------------------------------------------|
-| Cores           | All four usable: core 0 at handoff, cores 1–3 via the release mailbox (`x7`) †        |
-| Exception level | EL1 (AArch64).                                                                        |
-| MMU             | Off. All addresses physical.                                                          |
-| D-cache         | Image cleaned to the Point of Coherency — coherent across **all** cores.              |
-| I-cache         | Invalidated, so instruction fetch sees the loaded image.                              |
-| `DAIF`          | All masked (D, A, I, F).                                                              |
-| FP/SIMD         | Enabled (`CPACR_EL1.FPEN=0b11`); NEON usable.                                         |
-| Timers          | Counters readable at EL1; `CNTVOFF_EL2 = 0`; `CNTFRQ_EL0` valid †                     |
-| UART            | PL011 (UART0) up at 115200 8N1 on GPIO14/15 (ALT0); usable without re-init.           |
-| `SP`            | `SP_EL1` = `load_addr_max` (window top)                                               |
-| `PC`            | Core 0: `load_addr + entry_off`. Secondary: the address the payload released it to. † |
-| EL2 service     | Loader stays resident at EL2; reachable from EL1 via `HVC` (see below) †              |
+| Property        | Value at entry                                                                      |
+|-----------------|-------------------------------------------------------------------------------------|
+| Cores           | All four usable: core 0 at handoff, cores 1–3 via the release mailbox (`x7`)        |
+| Exception level | EL1 (AArch64).                                                                      |
+| MMU             | Off. All addresses physical.                                                        |
+| D-cache         | Image cleaned to the Point of Coherency — coherent across **all** cores.            |
+| I-cache         | Invalidated, so instruction fetch sees the loaded image.                            |
+| `DAIF`          | All masked (D, A, I, F).                                                            |
+| FP/SIMD         | Enabled (`CPACR_EL1.FPEN=0b11`); NEON usable.                                       |
+| Timers          | Counters readable at EL1; `CNTVOFF_EL2 = 0`; `CNTFRQ_EL0` valid †                   |
+| UART            | PL011 (UART0) up at 115200 8N1 on GPIO14/15 (ALT0); usable without re-init.         |
+| `SP`            | `SP_EL1` = `load_addr_max` (window top)                                             |
+| `PC`            | Core 0: `load_addr + entry_off`. Secondary: the address the payload released it to. |
+| EL2 service     | Loader stays resident at EL2; reachable from EL1 via `HVC` (see below) †            |
 
 Secondaries are **quiescent** until released: none touches memory before the
 payload starts it, so core-0 init needs no cross-core synchronization.
@@ -36,19 +37,19 @@ Every core — the boot core at handoff and each secondary when released — rec
 this identical block, differing only in `x8` (`core_id`). Duplicating it means a
 core never has to read shared RAM to learn the layout.
 
-| Reg        | Value at entry                                                                       |
-|------------|--------------------------------------------------------------------------------------|
-| `x0`       | `load_addr` — physical base of the loaded image                                      |
-| `x1`       | `image_len` — image length in bytes                                                  |
-| `x2`       | `load_addr_min` — writable window low bound                                          |
-| `x3`       | `load_addr_max` — writable window high bound                                         |
-| `x4`       | `dtb` — device-tree pointer (`0` if none or invalid)                                 |
-| `x5`       | `dtb_size` — verified FDT total size in bytes (`0` if no valid DTB) †                |
-| `x6`       | `abi_version` — entry-ABI generation, for forward compatibility †                    |
-| `x7`       | `smp_release` — base of the secondary release mailbox †                              |
-| `x8`       | `core_id` — normalized core index (`0` for the boot core, `1`–`3` for secondaries) † |
-| `x9`–`x30` | `0` — scrubbed                                                                       |
-| `v0`–`v31` | `0` — scrubbed                                                                       |
+| Reg        | Value at entry                                                                     |
+|------------|------------------------------------------------------------------------------------|
+| `x0`       | `load_addr` — physical base of the loaded image                                    |
+| `x1`       | `image_len` — image length in bytes                                                |
+| `x2`       | `load_addr_min` — writable window low bound                                        |
+| `x3`       | `load_addr_max` — writable window high bound                                       |
+| `x4`       | `dtb` — device-tree pointer (`0` if none or invalid)                               |
+| `x5`       | `dtb_size` — verified FDT total size in bytes (`0` if no valid DTB) †              |
+| `x6`       | `abi_version` — entry-ABI generation, for forward compatibility †                  |
+| `x7`       | `smp_release` — base of the secondary release mailbox                              |
+| `x8`       | `core_id` — normalized core index (`0` for the boot core, `1`–`3` for secondaries) |
+| `x9`–`x30` | `0` — scrubbed                                                                     |
+| `v0`–`v31` | `0` — scrubbed                                                                     |
 
 `x4`/`x5` bound the device tree as `[dtb, dtb + dtb_size)`: the loader checks the
 FDT magic at `dtb` and reads its `totalsize`, so both are `0` for no valid tree.

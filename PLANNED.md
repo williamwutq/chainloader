@@ -77,48 +77,6 @@ a load twice to prove the loader returns to `READY`. Fuzz the decoder with
   against an in-memory pipe, or rely on QEMU (`-M raspi2`). Leaning: the trait,
   since it also keeps the state machine unit-testable.
 
-## `smp-secondary-bringup` — bring secondary cores to the core-0 entry state
-
-**Crate:** `chainloader-loader`.
-**Breaking change:** No — extends the entry contract; single-core payloads are
-unaffected.
-**Depends on:** the hardware-validated loader.
-
-### Motivation
-
-The entry contract (EL1, FP/SIMD, timers, `VBAR_EL1=0`, scrubbed registers, a
-stack) is established only on the boot core. Cores 1–3 stay in the firmware
-spin-table at EL2 in raw firmware state, so a payload that starts them gets an
-inconsistent machine: core 0 arrives clean, secondaries arrive at EL2 with FP
-trapped and nothing set up, forcing the payload to redo the EL1 drop and enable
-per core. The asymmetry is documented in `docs/ENTRY_CONTRACT.md`; this closes
-it.
-
-### Design
-
-Before handing off, core 0 releases each secondary from the firmware spin-table
-(write the address of a resident loader trampoline to `0xe0`/`0xe8`/`0xf0`, then
-`SEV`). Each secondary enters the trampoline at EL2, enables FP/SIMD, drops to EL1
-with the common config (`SCTLR_EL1`, `VBAR_EL1=0`, timer access), and parks in a
-loader-owned `WFE` loop polling a per-core release mailbox in resident loader
-memory.
-
-The mailbox base is handed to the payload in a register (`x7`), not a boot-info
-struct — a register carries no coherency burden once the payload enables caches
-(the mailbox memory still needs the usual spin-table handling, but that is
-inherent to any release path). To start a core, the payload writes its EL1 entry
-to the core's slot and `SEV`s; the core then adopts the *same* register handoff
-as core 0 — the identical `x0`–`x8` block, differing only in `x8` (`core_id`), so
-it learns the memory/DTB layout from registers without a RAM read — and branches
-there at EL1. It gets no distinct stack: like core 0 it wakes with `SP` at the
-window top, and the kernel owns per-core stacks (releasing serially or switching
-off the default at once). The full register map is in `docs/ENTRY_GOAL.md`.
-
-### Open questions
-
-- **Firmware path.** Leave the firmware spin-table usable as well, or fully take
-  the cores over? Taking over is cleaner but makes the loader own all four cores.
-
 ## `hvc-reload-service` — kernel-requested reload without a power cycle
 
 **Crate:** `chainloader-loader`.

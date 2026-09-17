@@ -5,14 +5,15 @@ An image built to these expectations runs identically whether it is the first
 or the tenth loaded in a session, without a power cycle. This is normative:
 independent loaders and payloads should both be able to rely on it.
 
-For the target state once the planned work lands (secondary cores, …), see
-[`ENTRY_GOAL.md`](ENTRY_GOAL.md) — aspirational, not yet guaranteed.
+For the target state once the remaining planned work lands (the EL2 reload
+service, …), see [`ENTRY_GOAL.md`](ENTRY_GOAL.md) — aspirational, not yet
+guaranteed.
 
 ## Processor state at entry
 
 | Property        | Value at entry                                                                 |
 |-----------------|--------------------------------------------------------------------------------|
-| Core            | Core 0 only. Cores 1–3 remain parked in the firmware spin loop.                |
+| Core            | Core 0 at handoff; cores 1–3 released into the loader, startable via `x7`.     |
 | Exception level | EL1 (AArch64).                                                                 |
 | MMU             | Off. No translation is enabled; all addresses are physical.                    |
 | D-cache         | Loaded image cleaned to the Point of Coherency; otherwise as firmware left it. |
@@ -33,7 +34,10 @@ For the target state once the planned work lands (secondary cores, …), see
 | `x2`       | `load_addr_min` — writable window low bound            |
 | `x3`       | `load_addr_max` — writable window high bound           |
 | `x4`       | `dtb` — firmware device-tree-blob pointer, `0` if none |
-| `x5`–`x30` | `0` — scrubbed for a clean handoff                     |
+| `x5`–`x6`  | `0` — reserved (`dtb_size`/`abi_version`, not yet set) |
+| `x7`       | `smp_release` — base of the secondary release mailbox  |
+| `x8`       | `core_id` — `0` on the boot core                       |
+| `x9`–`x30` | `0` — scrubbed for a clean handoff                     |
 | `v0`–`v31` | `0` — SIMD/FP register file scrubbed                   |
 
 `x2`/`x3` are the same writable window the loader advertised in `READY`
@@ -45,6 +49,11 @@ keeps clear of `[__loader_start, __loader_end)`.
 its own entry), forwarded verbatim. It is `0` when the firmware loaded no device
 tree, so a payload that uses it must handle the null case. A payload that ignores
 `x0`–`x4` (e.g. one linked to a fixed load address) is also valid.
+
+`x7` is the base of the secondary release mailbox and `x8` is the core id (`0`
+here); see [Secondary cores](#secondary-cores-13). `x5`/`x6` are reserved (they
+carry the target ABI's `dtb_size`/`abi_version` in `ENTRY_GOAL.md` but are `0`
+until those land) — a payload must not read meaning into them yet.
 
 ## Cache/coherency sequence
 
@@ -99,21 +108,30 @@ statics are already zero at entry — it does **not** need to clear its own BSS.
 
 ## Secondary cores (1–3)
 
-Everything above describes the **boot core (core 0)** only. Cores 1–3 never enter
-the loader: the firmware parks them in its own spin-table (`WFE` on the release
-slots `0xe0`/`0xe8`/`0xf0`) at **EL2**, in raw firmware state — no EL1 drop, no
-FP/SIMD enable, no `VBAR`, no stack, registers unscrubbed. A payload that starts
-a secondary via the spin-table therefore receives it at EL2 and must establish
-that core's state itself (drop to EL1, enable FP/SIMD, install vectors, …).
+Before handing off, core 0 releases cores 1–3 from the firmware spin-table (it
+writes a resident loader trampoline's address to `0xe0`/`0xe8`/`0xf0` and `SEV`s).
+Each secondary enters that trampoline at **EL2**, enables FP/SIMD, and parks in a
+loader-owned `WFE` loop polling its slot of the **release mailbox** whose base is
+handed to the payload in `x7`. Until started, a secondary touches no payload
+memory, so core-0 bring-up needs no cross-core synchronization.
 
-Bringing secondaries up in the same state as core 0 requires the loader to take
-them over from the firmware stub and own their release path; that is planned
-(`../PLANNED.md`), not yet implemented.
+To start core *N* (1–3), the payload writes that core's EL1 entry address to
+`x7 + N*8` and `SEV`s. The core leaves its `WFE`, invalidates its own I-cache
+(the image's D-cache was already cleaned to the Point of Coherency, coherent
+across cores), drops EL2→EL1 into the *same* state as core 0, and branches to the
+entry with the *same* register handoff — identical `x0`–`x8` differing only in
+`x8 = N` — reconstructed from loader-resident state, so a secondary needs no RAM
+read to learn the layout. Like core 0 it wakes with `SP_EL1` at the window top, so
+a payload starting several cores must release them serially or have each switch to
+its own stack immediately. The mailbox is physical RAM: once the payload enables
+its MMU/caches it must map that region non-cacheable or maintain it by hand (the
+standard spin-table caveat).
 
 ## What the loader does *not* do
 
 - It does not enable or configure the MMU.
-- It does not wake secondary cores.
+- It does not *start* secondary cores — it parks them ready; the payload starts
+  each via the `x7` mailbox.
 - It does not install an actual exception vector table; it only sets
   `VBAR_EL1 = 0` (above), so a payload taking exceptions must install its own.
 

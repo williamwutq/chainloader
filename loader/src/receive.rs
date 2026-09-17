@@ -337,9 +337,10 @@ unsafe fn write_image(load_addr: u64, offset: u32, chunk: &[u8]) {
 /// tail `[load_addr+image_len, load_addr+mem_len)`, makes the whole footprint
 /// coherent with instruction fetch, configures EL1 (AArch64, reset `SCTLR_EL1`,
 /// null `VBAR_EL1`, EL1 timer access, `SP_EL1` at the top of the writable
-/// window), and hands over `x0=load_addr`, `x1=image_len`, `x2=WINDOW_MIN`,
-/// `x3=window_max`, `x4=dtb` at EL1 with every other GPR and all SIMD/FP
-/// (`v0`–`v31`) registers zeroed, per `../docs/ENTRY_CONTRACT.md`.
+/// window), releases cores 1–3 into the resident trampoline, and hands over
+/// `x0=load_addr`, `x1=image_len`, `x2=WINDOW_MIN`, `x3=window_max`, `x4=dtb`,
+/// `x7=`release-mailbox base, `x8=0` (core id) at EL1, with every other GPR and
+/// all SIMD/FP (`v0`–`v31`) registers zeroed, per `../docs/ENTRY_CONTRACT.md`.
 unsafe fn jump(
     entry: u64,
     load_addr: u64,
@@ -357,8 +358,14 @@ unsafe fn jump(
             load_addr + u64::from(mem_len),
         );
         // Clean the full footprint — image plus the just-zeroed tail — so the
-        // stores are visible to instruction fetch and to the payload's reads.
+        // stores are visible to instruction fetch and to the payload's reads,
+        // and to any secondary core that later runs the image.
         clean_dcache(load_addr, load_addr + u64::from(mem_len));
+        // Release cores 1-3 into the resident trampoline, where they park ready
+        // for the payload to start via the mailbox (its base handed off in x7).
+        // Done after the clean above so a started secondary sees coherent bytes.
+        crate::smp::release(load_addr, u64::from(image_len), WINDOW_MIN, window_max, dtb);
+        let mailbox = crate::smp::mailbox_base();
         // EL1 setup values, precomputed so the `noreturn` asm needs no scratch:
         let hcr_el2: u64 = 1 << 31; // RW = 1: EL1 executes in AArch64
         let cnthctl_el2: u64 = 0b11; // EL1PCTEN | EL1PCEN: EL1 may read the timers
@@ -377,11 +384,11 @@ unsafe fn jump(
             "msr  sp_el1, {stack}",     // stack at the top of the writable window
             "msr  spsr_el2, {spsr}",
             "msr  elr_el2, {entry}",    // return into the image entry at EL1
-            // Clean handoff: x0-x4 carry the contract; scrub every other GPR.
+            // Clean handoff: x0-x4 carry the contract, x7 the release mailbox,
+            // x8 the core id (0 for the boot core); scrub every other GPR.
             // (These also overwrite the scratch operands above, now consumed.)
             "mov  x5, xzr",
             "mov  x6, xzr",
-            "mov  x7, xzr",
             "mov  x8, xzr",
             "mov  x9, xzr",
             "mov  x10, xzr",
@@ -450,6 +457,7 @@ unsafe fn jump(
             in("x2") WINDOW_MIN,
             in("x3") window_max,
             in("x4") dtb,
+            in("x7") mailbox,
             options(noreturn, nostack),
         )
     }

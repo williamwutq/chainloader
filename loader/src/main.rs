@@ -17,6 +17,7 @@
 mod led;
 mod mailbox;
 mod receive;
+mod smp;
 mod uart;
 // Scaffolding for the planned USB CDC-ACM transport; not yet wired in.
 mod usb;
