@@ -29,6 +29,12 @@ const WINDOW_MIN: u64 = 0x0020_0000;
 /// Exclusive high bound used only if the mailbox memory query fails: 448 MiB,
 /// the safe floor across supported boards (a 512 MiB Zero 2 W minus a default
 /// 64 MiB `gpu_mem` split). It is already 1 MiB-aligned.
+///
+/// Note: on a stock Zero 2 W `GET_ARM_MEMORY` returns exactly this value
+/// (512 MiB − 64 MiB), so a real query and this fallback coincide there — the
+/// window ending at `0x1C00_0000` is *not* evidence of a failed query. The
+/// mailbox path is confirmed working on hardware; the two only differ on boards
+/// with a different RAM size or `gpu_mem` split.
 const FALLBACK_WINDOW_MAX: u64 = 0x1C00_0000;
 /// Required alignment of a load address (advertised in `READY`).
 const REQUIRED_ALIGN: u64 = 0x800;
@@ -41,6 +47,10 @@ const LOADER_VERSION: u32 = 1;
 const ST_CLO: usize = 0x3F00_3004;
 /// Idle-heartbeat period, in microseconds (1 s).
 const HEARTBEAT_US: u32 = 1_000_000;
+/// Mid-transfer inactivity bound, in microseconds (3 s). A host streams `DATA`
+/// back-to-back, so a gap this long means it vanished; the loader then abandons
+/// the partial transfer rather than waiting forever.
+const RECEIVE_TIMEOUT_US: u32 = 3_000_000;
 
 /// The 1 MHz system-timer count. Wraps roughly every 71 minutes; compare with
 /// [`u32::wrapping_sub`].
@@ -121,16 +131,30 @@ pub fn run(uart: Uart, dtb: u64) -> ! {
     // off and never interleaves with the binary protocol.
     let mut contacted = false;
     let mut last_beat = now_us();
+    let mut last_rx = now_us();
 
     loop {
         let Some(byte) = uart.try_get_byte() else {
-            if !contacted && now_us().wrapping_sub(last_beat) >= HEARTBEAT_US {
-                last_beat = now_us();
+            let now = now_us();
+            if transfer.is_some() && now.wrapping_sub(last_rx) >= RECEIVE_TIMEOUT_US {
+                // A host disappeared part-way through a transfer. Drop the partial
+                // image, reset the decoder, and return to the waiting state
+                // (re-announce `READY`, resume the heartbeat) so a reconnecting
+                // host — or a human — can simply start over.
+                transfer = None;
+                decoder = Decoder::new();
+                contacted = false;
+                send_ready(&uart, limits);
+                last_beat = now;
+                last_rx = now;
+            } else if !contacted && now.wrapping_sub(last_beat) >= HEARTBEAT_US {
+                last_beat = now;
                 uart.write_str("chainloader: up, waiting for host (HELLO)...\n");
             }
             core::hint::spin_loop();
             continue;
         };
+        last_rx = now_us();
         match decoder.push(byte) {
             Decoded::None => {}
             // Before contact, treat a decode error as line noise and stay quiet;

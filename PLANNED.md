@@ -8,11 +8,13 @@ reader who disagrees knows exactly which claim to attack.
 A shipped entry moves to `CHANGELOG.md` under `[Unreleased]` and is deleted
 from here.
 
-In place today (all off-hardware paths implemented and tested): the full
-`chainloader-protocol` codec; the loader's boot, UART, and receive/validate/jump
-path; and `cargo pi load`/`console` end to end. What remains is validation on a
-real Pi Zero 2 W and the polish items below. The wire format (`docs/PROTOCOL.md`) and
-the jump contract (`docs/ENTRY_CONTRACT.md`) are the committed references.
+In place today: the full `chainloader-protocol` codec; the loader's boot, UART,
+and receive/validate/jump path; and `cargo pi load`/`console` end to end — all
+validated on a real Pi Zero 2 W (clean 115200 UART, a framed image transfer, and
+the EL1 register handoff, with `GET_ARM_MEMORY` sizing the window from real
+hardware). What remains are the polish and feature items below. The wire format
+(`docs/PROTOCOL.md`) and the jump contract (`docs/ENTRY_CONTRACT.md`) are the
+committed references.
 
 ---
 
@@ -23,58 +25,6 @@ required subsections: `### Motivation`, `### Design`, `### Open questions`.
 State `No` explicitly rather than omitting a metadata field.
 
 ---
-
-## `loader-hardware-bringup` — validate the loader on a real Pi Zero 2 W
-
-**Crate:** `chainloader-loader`.
-**Breaking change:** No — the loader has no public API.
-**Depends on:** the shipped receive path.
-
-### Motivation
-
-The receive/validate/jump path (`loader/src/receive.rs`) is implemented and
-verified in disassembly. UART bring-up is now confirmed on a Zero 2 W: the baud,
-the GPIO14/15 routing, and the Bluetooth unroute all work, with the banner and
-idle heartbeat legible at 115200. What has not run on hardware is the end-to-end
-receive→validate→jump path and the mailbox-based window sizing.
-
-### Design
-
-Flash `kernel8.img` with `arm_64bit=1` and `enable_uart=1` in `config.txt` (the
-loader frees PL011 from the Zero 2 W's on-board Bluetooth itself, by returning
-GPIO32/33 to inputs, so no `disable-bt` overlay is needed), confirm the banner
-and heartbeat over a 3.3 V USB-TTL adapter, then drive a real load with `cargo pi
-load` from `payload-example/` — its `[payload-example] running` banner (EL,
-`x0`–`x4`, an FP op) is the end-to-end success signal.
-
-Two decisions are settled and baked into the shipped loader:
-
-- **Baud from a fixed clock.** The divisors come from the firmware's default
-  48 MHz PL011 reference clock (`IBRD=26`, `FBRD=3`), not the mailbox. An earlier
-  version pinned the clock to 4 MHz via the mailbox and read it back, but on
-  hardware the firmware misreported the UART clock and the loader transmitted an
-  unreadable ~1.38 Mbaud; the fixed-clock path is confirmed legible at 115200.
-- **Caches assumed on.** Treat firmware as leaving the caches enabled and run the
-  D-cache clean + `IC IALLU` + `DSB`/`ISB` sequence unconditionally rather than
-  gating it on a probe. This is also what `hvc-reload-service` needs: there a
-  kernel running with its MMU and caches on `HVC`s back into the loader, so the
-  handoff must be correct with caches live in any case.
-
-### Open questions
-
-- **Timeouts.** The loader spins on `try_get_byte`. The idle heartbeat already
-  re-announces liveness *before* first contact; what is still undecided is a
-  mid-transfer watchdog that re-announces `READY` after a host disconnects
-  part-way. Add a coarse timeout, or rely on the host retrying? Leaning: add it
-  only once the end-to-end load is proven.
-- **Window sizing on this firmware.** The window's high bound is sized at boot
-  from `GET_ARM_MEMORY` (`src/mailbox.rs`), rounded down to a 1 MiB boundary,
-  with a conservative 448 MiB fallback for a failed query. But the mailbox
-  *clock* tags misreported on this board, so the mailbox's reliability here is
-  itself now in question: confirm on hardware that `GET_ARM_MEMORY` returns the
-  true size (512 MiB Zero 2 W, less the `gpu_mem` split) and the loader is not
-  silently running on the fallback — read back the advertised window and check it
-  against the board.
 
 ## `console-raw-mode` — raw terminal for the post-load console
 
@@ -132,7 +82,7 @@ a load twice to prove the loader returns to `READY`. Fuzz the decoder with
 **Crate:** `chainloader-loader`.
 **Breaking change:** No — extends the entry contract; single-core payloads are
 unaffected.
-**Depends on:** `loader-hardware-bringup`.
+**Depends on:** the hardware-validated loader.
 
 ### Motivation
 
@@ -173,7 +123,7 @@ off the default at once). The full register map is in `docs/ENTRY_GOAL.md`.
 
 **Crate:** `chainloader-loader`.
 **Breaking change:** No — additive; payloads that never `HVC` are unaffected.
-**Depends on:** `loader-hardware-bringup`; interacts with the EL2→EL1 drop.
+**Depends on:** the hardware-validated loader; interacts with the EL2→EL1 drop.
 
 ### Motivation
 
@@ -215,7 +165,7 @@ even v1 needs a return path: the dispatcher must preserve any caller GPR it read
 
 **Crate:** `chainloader-loader`.
 **Breaking change:** No — additive; the current Zero 2 W path stays the default.
-**Depends on:** `loader-hardware-bringup`.
+**Depends on:** the hardware-validated loader.
 
 ### Motivation
 
@@ -247,7 +197,7 @@ only add support, never break the working path.
 
 **Crate:** `chainloader-loader` (plus a small `cargo-pi` touch-up).
 **Breaking change:** No — an alternative transport; the UART path stays.
-**Depends on:** `loader-hardware-bringup`.
+**Depends on:** the hardware-validated loader.
 
 ### Motivation
 
