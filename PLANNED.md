@@ -32,42 +32,49 @@ State `No` explicitly rather than omitting a metadata field.
 
 ### Motivation
 
-The receive/validate/jump path (`loader/src/receive.rs`) is implemented and the
-UART and cache/jump instructions are verified in disassembly, but none of it has
-run on hardware. The PL011 baud constants, the GPIO routing, and the
-cache-maintenance sequence are written from the datasheet and need measuring.
+The receive/validate/jump path (`loader/src/receive.rs`) is implemented and
+verified in disassembly. UART bring-up is now confirmed on a Zero 2 W: the baud,
+the GPIO14/15 routing, and the Bluetooth unroute all work, with the banner and
+idle heartbeat legible at 115200. What has not run on hardware is the end-to-end
+receive→validate→jump path and the mailbox-based window sizing.
 
 ### Design
 
 Flash `kernel8.img` with `arm_64bit=1` and `enable_uart=1` in `config.txt` (the
 loader frees PL011 from the Zero 2 W's on-board Bluetooth itself, by returning
 GPIO32/33 to inputs, so no `disable-bt` overlay is needed), confirm the banner
-over a USB-UART adapter, then drive a real load with `cargo pi load` from
-`payload-example/` — its `[payload-example] running` banner (EL, `x0`–`x4`, an
-FP op) is the end-to-end success signal. The decisions that cannot be settled
-off-hardware:
+and heartbeat over a 3.3 V USB-TTL adapter, then drive a real load with `cargo pi
+load` from `payload-example/` — its `[payload-example] running` banner (EL,
+`x0`–`x4`, an FP op) is the end-to-end success signal.
+
+Two decisions are settled and baked into the shipped loader:
+
+- **Baud from a fixed clock.** The divisors come from the firmware's default
+  48 MHz PL011 reference clock (`IBRD=26`, `FBRD=3`), not the mailbox. An earlier
+  version pinned the clock to 4 MHz via the mailbox and read it back, but on
+  hardware the firmware misreported the UART clock and the loader transmitted an
+  unreadable ~1.38 Mbaud; the fixed-clock path is confirmed legible at 115200.
+- **Caches assumed on.** Treat firmware as leaving the caches enabled and run the
+  D-cache clean + `IC IALLU` + `DSB`/`ISB` sequence unconditionally rather than
+  gating it on a probe. This is also what `hvc-reload-service` needs: there a
+  kernel running with its MMU and caches on `HVC`s back into the loader, so the
+  handoff must be correct with caches live in any case.
 
 ### Open questions
 
-- **Timeouts.** The loader blocks on `get_byte`. A watchdog/timeout would let it
-  re-announce `READY` after a host disconnect mid-transfer. Poll `FR` with a
-  loop counter, or leave blocking and rely on the host retrying? Leaning: add a
-  coarse timeout only once hardware bring-up works.
-- **Cache maintenance while MMU off.** Confirm on hardware whether firmware
-  leaves caches on; the `IC IALLU` + `DSB`/`ISB` sequence is written to be safe
-  either way, but this needs measuring, not assuming.
-- **Baud clock — resolved, needs hardware confirmation.** The loader pins the
-  UART clock to 4 MHz via the mailbox (`src/mailbox.rs`, `MBOX_TAG_SETCLKRATE`)
-  and uses `IBRD=2`, `FBRD=0xB`, matching the bztsrc reference, so no
-  `init_uart_clock` setting is needed. What remains is confirming on hardware
-  that the mailbox exchange succeeds and the banner is legible at 115200.
-- **Writable-window ceiling — resolved, needs hardware confirmation.** The
-  window's high bound is sized at boot from the ARM RAM the VideoCore reports
-  (`GET_ARM_MEMORY`, `src/mailbox.rs`), rounded down to a 1 MiB boundary, so it
-  tracks the board (512 MiB Zero 2 W, 1 GiB Pi 2/3) and the `gpu_mem` split
-  instead of assuming. A conservative 448 MiB fallback covers a failed query.
-  What remains is confirming on hardware that the query returns the expected
-  size.
+- **Timeouts.** The loader spins on `try_get_byte`. The idle heartbeat already
+  re-announces liveness *before* first contact; what is still undecided is a
+  mid-transfer watchdog that re-announces `READY` after a host disconnects
+  part-way. Add a coarse timeout, or rely on the host retrying? Leaning: add it
+  only once the end-to-end load is proven.
+- **Window sizing on this firmware.** The window's high bound is sized at boot
+  from `GET_ARM_MEMORY` (`src/mailbox.rs`), rounded down to a 1 MiB boundary,
+  with a conservative 448 MiB fallback for a failed query. But the mailbox
+  *clock* tags misreported on this board, so the mailbox's reliability here is
+  itself now in question: confirm on hardware that `GET_ARM_MEMORY` returns the
+  true size (512 MiB Zero 2 W, less the `gpu_mem` split) and the loader is not
+  silently running on the fallback — read back the advertised window and check it
+  against the board.
 
 ## `console-raw-mode` — raw terminal for the post-load console
 
