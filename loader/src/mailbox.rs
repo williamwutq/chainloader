@@ -1,10 +1,9 @@
 //! Minimal VideoCore mailbox client (property channel).
 //!
-//! Used to set the PL011 reference clock to a known rate, so the UART baud rate
-//! no longer depends on `init_uart_clock` in `config.txt`. This is the approach
-//! the widely-used bztsrc raspi3 tutorial takes; it works at early boot with the
-//! MMU off because ARM data accesses then bypass the caches, so the VideoCore
-//! sees our request buffer and we see its response without cache maintenance.
+//! Used to query the ARM-visible RAM size, so the writable window is sized to
+//! the board rather than hardcoded. It works at early boot with the MMU off
+//! because ARM data accesses then bypass the caches, so the VideoCore sees our
+//! request buffer and we see its response without cache maintenance.
 
 use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{Ordering, compiler_fence};
@@ -25,10 +24,7 @@ const CHANNEL_PROP: u32 = 8;
 
 const REQUEST_CODE: u32 = 0x0000_0000;
 const RESPONSE_SUCCESS: u32 = 0x8000_0000;
-const TAG_SET_CLOCK_RATE: u32 = 0x0003_8002;
 const TAG_GET_ARM_MEMORY: u32 = 0x0001_0005;
-/// Clock id for the UART reference clock.
-const CLOCK_UART: u32 = 2;
 
 /// A 16-byte-aligned property-message buffer. The mailbox requires the message
 /// address to be 16-aligned (its low nibble carries the channel number).
@@ -76,29 +72,6 @@ unsafe fn exchange(msg: &mut Message) -> bool {
         // words[1] holds the response code the VideoCore wrote back.
         read_volatile(base.add(1)) == RESPONSE_SUCCESS
     }
-}
-
-/// Sets the UART reference clock to `rate_hz`, returning `true` on success.
-///
-/// # Safety
-///
-/// Performs raw MMIO to the mailbox registers. Run once, early, on the boot core.
-pub unsafe fn set_uart_clock(rate_hz: u32) -> bool {
-    let mut msg = Message {
-        words: [
-            9 * 4,              // total size in bytes
-            REQUEST_CODE,       // request
-            TAG_SET_CLOCK_RATE, // tag
-            12,                 // value buffer size
-            8,                  // tag request code
-            CLOCK_UART,         // clock id
-            rate_hz,            // requested rate
-            0,                  // do not skip setting turbo
-            0,                  // end tag
-        ],
-    };
-    // SAFETY: boot core, MMU off; a single synchronous mailbox exchange.
-    unsafe { exchange(&mut msg) }
 }
 
 /// Queries the ARM-visible RAM region as `(base, size)` in bytes — already net

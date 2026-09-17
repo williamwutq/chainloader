@@ -28,11 +28,36 @@ rust-objcopy -O binary \
 
 Copy `kernel8.img` to the SD card's boot partition once. `config.txt` needs only
 `arm_64bit=1` and `enable_uart=1`. The firmware then loads `kernel8.img` to
-`0x80000` and enters on core 0. The loader pins the UART reference clock itself
-via the VideoCore mailbox (so no `init_uart_clock` setting is needed) and, on the
-Bluetooth-equipped boards (Zero 2 W, Pi 3), frees PL011 from the on-board
-Bluetooth by returning GPIO32/33 to inputs — so **no `dtoverlay=disable-bt` is
-required**.
+`0x80000` and enters on core 0. The `enable_uart=1` setting leaves the PL011 on
+its default 48 MHz reference clock, which the loader assumes when programming the
+baud divisors. On the Bluetooth-equipped boards (Zero 2 W, Pi 3) the loader frees
+PL011 from the on-board Bluetooth by returning GPIO32/33 to inputs — so **no
+`dtoverlay=disable-bt` is required**.
+
+## Serial console
+
+The loader talks over PL011 UART0 at **115200 8N1** on the GPIO header. Wire a
+3.3V USB-TTL adapter (do **not** connect its power pin — power the Pi from its own
+supply):
+
+| Adapter | Pi header             |
+|---------|-----------------------|
+| `RXD`   | pin 8  — GPIO14 (TXD) |
+| `TXD`   | pin 10 — GPIO15 (RXD) |
+| `GND`   | pin 6 (or any ground) |
+
+The Pi's UART pins are 3.3V and **not** 5V-tolerant; a multi-function adapter
+(TTL/RS232/RS485) must be switched to plain **TTL** mode or its TTL pins stay
+dead.
+
+**Power-on order matters:** plug the USB adapter into the host **first and wait at
+least ~2 seconds** for it to enumerate and initialize, *then* power the Pi. If the
+Pi is powered while the adapter is still initializing, the link won't come up (the
+adapter's RX light won't even flash) and you'll see nothing.
+
+Until a host speaks the protocol, the loader prints `chainloader: up, waiting for
+host (HELLO)...` once per second — a heartbeat to confirm the link and baud. The
+first inbound byte silences it, so it never interferes with a real transfer.
 
 The image is 64-bit, so the board must be AArch64-capable: the Zero 2 W, Pi 3,
 and Pi 2 rev 1.2 (BCM2837) all qualify; the original Pi 2 rev 1.1 (BCM2836,
@@ -52,8 +77,10 @@ receive/validate/jump path are implemented ([`src/receive.rs`](src/receive.rs)):
 it advertises `READY`, validates each `HEADER` against the writable window and
 the loader's own footprint, streams `DATA` into RAM under a running CRC, and on
 `BOOT` runs the cache-maintenance sequence and branches per the entry contract.
-Not yet validated on hardware — cache behavior and a receive timeout are the
-remaining open questions in [`../PLANNED.md`](../PLANNED.md).
+UART bring-up is confirmed on a Zero 2 W (banner and heartbeat at 115200); the
+end-to-end transfer/jump path is not yet hardware-validated — cache behavior and a
+receive timeout are the remaining open questions in
+[`../PLANNED.md`](../PLANNED.md).
 
 ## License
 

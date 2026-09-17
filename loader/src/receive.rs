@@ -12,7 +12,7 @@
 //! payload's neighbours.
 
 use core::arch::asm;
-use core::ptr::write_volatile;
+use core::ptr::{read_volatile, write_volatile};
 
 use chainloader_protocol::{
     Ack, Crc32, DataFrame, DecodeError, Decoded, Decoder, ErrorCode, ErrorMsg, FrameType,
@@ -36,6 +36,18 @@ const REQUIRED_ALIGN: u64 = 0x800;
 const MAX_CHUNK: u16 = (MAX_PAYLOAD - DataFrame::HEADER) as u16;
 /// Loader build version, advertised in `READY`.
 const LOADER_VERSION: u32 = 1;
+
+/// System-timer free-running counter (low 32 bits), ticking at 1 MHz.
+const ST_CLO: usize = 0x3F00_3004;
+/// Idle-heartbeat period, in microseconds (1 s).
+const HEARTBEAT_US: u32 = 1_000_000;
+
+/// The 1 MHz system-timer count. Wraps roughly every 71 minutes; compare with
+/// [`u32::wrapping_sub`].
+fn now_us() -> u32 {
+    // SAFETY: fixed, read-only system-timer counter register.
+    unsafe { read_volatile(ST_CLO as *const u32) }
+}
 
 /// Writable-window limits, sized to the board at startup so the loader is not
 /// pinned to one platform's RAM size.
@@ -99,8 +111,25 @@ pub fn run(uart: Uart, dtb: u64) -> ! {
     let mut decoder = Decoder::new();
     let mut transfer: Option<Transfer> = None;
 
+    // Until the host first speaks, emit a periodic ASCII heartbeat so a human
+    // bringing up the serial link has a continuous stream to catch and verify
+    // the baud against — a one-shot boot banner is easy to miss with hand-held
+    // wires. The first inbound byte silences it for good, so it never
+    // interleaves with the binary protocol once a real host is talking.
+    let mut contacted = false;
+    let mut last_beat = now_us();
+
     loop {
-        match decoder.push(uart.get_byte()) {
+        let Some(byte) = uart.try_get_byte() else {
+            if !contacted && now_us().wrapping_sub(last_beat) >= HEARTBEAT_US {
+                last_beat = now_us();
+                uart.write_str("chainloader: up, waiting for host (HELLO)...\n");
+            }
+            core::hint::spin_loop();
+            continue;
+        };
+        contacted = true;
+        match decoder.push(byte) {
             Decoded::None => {}
             Decoded::Error(e) => send_error(&uart, decode_error_code(e), 0),
             Decoded::Frame(ty) => {

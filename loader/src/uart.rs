@@ -2,11 +2,8 @@
 //! BCM2836/BCM2837 family, which share the `0x3F00_0000` peripheral base.
 //!
 //! Register offsets and the GPIO14/15 ALT0 routing follow the BCM2835/2837
-//! peripheral manual. Rather than assume `config.txt` sets a particular UART
-//! reference clock, [`Uart::init`] pins the clock to a known rate via the
-//! VideoCore mailbox (see [`crate::mailbox`]) and computes the baud divisors for
-//! it. Written against the datasheet and the bztsrc reference; not yet validated
-//! on hardware (see `../PLANNED.md`).
+//! peripheral manual. [`Uart::init`] computes the baud divisors from the
+//! firmware's default 48 MHz PL011 reference clock (see `UART_CLOCK_HZ`).
 //!
 //! Routing note: on the Bluetooth-equipped boards (Zero 2 W, Pi 3) the firmware
 //! wires PL011 to the on-board Bluetooth modem via GPIO32/33 by default. Rather
@@ -16,8 +13,6 @@
 //! The Pi 2 has no Bluetooth and is unaffected.
 
 use core::ptr::{read_volatile, write_volatile};
-
-use crate::mailbox;
 
 /// Peripheral base shared by the BCM2836/BCM2837 family (Pi 2, Pi 3, Zero 2 W).
 /// The Pi 1 / Zero base is `0x2000_0000`.
@@ -49,14 +44,30 @@ const CR_UARTEN: u32 = 1; // bit 0
 const CR_TXE: u32 = 1 << 8;
 const CR_RXE: u32 = 1 << 9;
 
-/// UART reference clock the loader pins via the mailbox, in Hz.
-const UART_CLOCK_HZ: u32 = 4_000_000;
-/// Integer baud divisor for 115200 baud at [`UART_CLOCK_HZ`].
+/// Target line rate, 8N1.
+const BAUD: u32 = 115_200;
+/// PL011 reference clock (`UARTCLK`) in Hz. The Raspberry Pi firmware runs the
+/// PL011 from a 48 MHz reference by default when `enable_uart=1` is set (as it
+/// is on the card's `config.txt`), and — unlike the mini-UART — this clock does
+/// not track the core frequency, so it is stable without pinning.
 ///
-/// `4_000_000 / (16 * 115_200) = 2.170`.
-const IBRD_115200: u32 = 2;
-/// Fractional baud divisor: `round(0.170 * 64) = 11` (`0xB`).
-const FBRD_115200: u32 = 0xB;
+/// An earlier version asked the mailbox to pin this to 4 MHz and read the rate
+/// back to derive the divisor, but on real hardware the firmware neither honored
+/// the 4 MHz request nor reported the true 48 MHz rate (it echoed the request),
+/// so the loader computed a 12x-too-slow divisor and transmitted unreadable
+/// ~1.38 Mbaud. Trusting the documented default is both simpler and correct.
+const UART_CLOCK_HZ: u32 = 48_000_000;
+
+/// PL011 integer/fractional baud divisors for `baud` at `clock_hz`.
+///
+/// `BAUDDIV = clock / (16 * baud)`; the integer part goes in `IBRD` and the
+/// fraction, in 64ths, in `FBRD`. Computed as `div64 = round(64 * clock /
+/// (16 * baud)) = round(4 * clock / baud)`, then split. At 48 MHz / 115200 this
+/// yields `(26, 3)`.
+const fn baud_divisors(clock_hz: u32, baud: u32) -> (u32, u32) {
+    let div64 = (4 * clock_hz + baud / 2) / baud;
+    (div64 / 64, div64 % 64)
+}
 
 /// A zero-sized handle to the single PL011 peripheral.
 pub struct Uart;
@@ -70,10 +81,11 @@ impl Uart {
     /// It performs raw MMIO writes to fixed peripheral addresses.
     pub unsafe fn init(&self) {
         unsafe {
-            // Pin the UART reference clock so the divisors below are correct
-            // regardless of `config.txt`. Best effort: if the mailbox call
-            // fails, fall through with whatever clock the firmware set.
-            let _ = mailbox::set_uart_clock(UART_CLOCK_HZ);
+            // Derive the baud divisors from the firmware's default 48 MHz PL011
+            // reference clock (see UART_CLOCK_HZ). Not routed through the mailbox:
+            // on real hardware the clock-rate tags misreported the rate, yielding
+            // an unreadable baud.
+            let (ibrd, fbrd) = baud_divisors(UART_CLOCK_HZ, BAUD);
 
             // Disable the UART before reconfiguring.
             write_volatile(UART_CR as *mut u32, 0);
@@ -104,8 +116,8 @@ impl Uart {
 
             // Clear pending interrupts, program baud, frame format, then enable.
             write_volatile(UART_ICR as *mut u32, 0x7FF);
-            write_volatile(UART_IBRD as *mut u32, IBRD_115200);
-            write_volatile(UART_FBRD as *mut u32, FBRD_115200);
+            write_volatile(UART_IBRD as *mut u32, ibrd);
+            write_volatile(UART_FBRD as *mut u32, fbrd);
             write_volatile(UART_LCRH as *mut u32, LCRH_FEN | LCRH_WLEN_8);
             write_volatile(UART_IMSC as *mut u32, 0); // mask all UART interrupts
             write_volatile(UART_CR as *mut u32, CR_UARTEN | CR_TXE | CR_RXE);
@@ -124,15 +136,16 @@ impl Uart {
         }
     }
 
-    /// Receives one byte, blocking while the receive FIFO is empty.
+    /// Receives one byte if the FIFO has one, else returns `None` immediately.
     #[inline]
-    pub fn get_byte(&self) -> u8 {
+    pub fn try_get_byte(&self) -> Option<u8> {
         // SAFETY: FR and DR are valid, fixed peripheral registers.
         unsafe {
-            while read_volatile(UART_FR as *const u32) & FR_RXFE != 0 {
-                core::hint::spin_loop();
+            if read_volatile(UART_FR as *const u32) & FR_RXFE != 0 {
+                None
+            } else {
+                Some((read_volatile(UART_DR as *const u32) & 0xFF) as u8)
             }
-            (read_volatile(UART_DR as *const u32) & 0xFF) as u8
         }
     }
 
