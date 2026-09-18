@@ -42,6 +42,8 @@ offset  size  field     notes
 | 0x05  | `ACK`    | Pi → host | `next_offset: u32`              |
 | 0x06  | `ERROR`  | Pi → host | `code: u16`, `detail: u32`      |
 | 0x07  | `BOOT`   | host → Pi | *(empty)*                       |
+| 0x08  | `MODE`   | host → Pi | `mode: u8`                      |
+| 0x09  | `IDLE`   | Pi → host | `heartbeat_secs: u16`           |
 
 ## Payloads
 
@@ -98,6 +100,26 @@ window and its own extent, not just the transferred bytes.
 | 10   | `OffsetMismatch` | `DATA` `offset` ≠ expected next offset      |
 | 11   | `ImageCrc`       | assembled image CRC ≠ `image_crc32`         |
 | 12   | `NoImage`        | `BOOT` before a complete, verified image    |
+
+### MODE (host → Pi) — 1 byte
+
+`mode: u8` — sets the loader's idle power mode: `0` = ready/normal, `1` =
+low-power. Only meaningful while the loader is idle (waiting): sent mid-transfer
+it returns `ERROR(Unexpected)`, and an unrecognized value returns
+`ERROR(Unexpected)` with the value in `detail`. On `mode = 0` the loader replies
+`READY`; on `mode = 1` it replies `IDLE`. Any `HELLO` also returns the loader to
+normal, so a load never needs a preceding wake.
+
+In low-power the loader drops the ACT LED (off, with a 500 ms flash every 30 s),
+slows its heartbeat to every ~120 s, and `WFI`-halts the boot core between events
+(waking on an incoming byte or a timer deadline). The mode resets to normal on
+every boot and `HVC #0` reload.
+
+### IDLE (Pi → host) — 2 bytes
+
+`heartbeat_secs: u16` — sent to confirm entry to low-power idle, reporting the
+reduced heartbeat period so the host does not read the coming quiet as a
+disconnect.
 
 ## Conversation
 
