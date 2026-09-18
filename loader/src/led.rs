@@ -70,3 +70,24 @@ pub unsafe fn signal_alive(blinks: u32) {
     }
     on(); // steady on: "loader running, waiting for host"
 }
+
+/// Lights the ACT LED steady — the normal "loader up, waiting" indicator, e.g.
+/// on leaving low-power idle. The pin is already an output (set by
+/// [`signal_alive`] at boot/reload).
+pub fn illuminate() {
+    on();
+}
+
+/// Extinguishes the ACT LED — used entering low-power idle, where it stays off
+/// between the periodic [`flash`]es.
+pub fn extinguish() {
+    off();
+}
+
+/// A brief liveness flash: on for `us` microseconds, then off. The board-alive
+/// blink during low-power idle.
+pub fn flash(us: u32) {
+    on();
+    delay_us(us);
+    off();
+}

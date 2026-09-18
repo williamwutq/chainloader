@@ -15,10 +15,11 @@ use core::arch::asm;
 use core::ptr::{read_volatile, write_volatile};
 
 use chainloader_protocol::{
-    Ack, Crc32, DataFrame, DecodeError, Decoded, Decoder, ErrorCode, ErrorMsg, FrameType,
-    ImageHeader, MAX_FRAME, MAX_PAYLOAD, Ready, encode_frame,
+    Ack, Crc32, DataFrame, DecodeError, Decoded, Decoder, ErrorCode, ErrorMsg, FrameType, Idle,
+    ImageHeader, MAX_FRAME, MAX_PAYLOAD, Mode, Ready, encode_frame,
 };
 
+use crate::led;
 use crate::mailbox;
 use crate::uart::Uart;
 
@@ -82,6 +83,14 @@ const HEARTBEAT_US: u32 = 1_000_000;
 /// back-to-back, so a gap this long means it vanished; the loader then abandons
 /// the partial transfer rather than waiting forever.
 const RECEIVE_TIMEOUT_US: u32 = 3_000_000;
+
+/// Low-power idle: ACT-LED liveness flash period (30 s) and duration (500 ms).
+const FLASH_PERIOD_US: u32 = 30_000_000;
+const FLASH_DURATION_US: u32 = 500_000;
+/// Low-power idle heartbeat period, in microseconds (2 min) and its `IDLE`-frame
+/// value in seconds.
+const LOW_POWER_HEARTBEAT_US: u32 = 120_000_000;
+const LOW_POWER_HEARTBEAT_SECS: u16 = 120;
 
 /// The 1 MHz system-timer count. Wraps roughly every 71 minutes; compare with
 /// [`u32::wrapping_sub`].
@@ -163,6 +172,10 @@ pub fn run(uart: Uart, dtb: u64) -> ! {
     let mut contacted = false;
     let mut last_beat = now_us();
     let mut last_rx = now_us();
+    // Idle power mode, host-commanded via `MODE`. Default normal; a low-power
+    // idle drops the LED and heartbeat and `WFI`-halts the core between events.
+    let mut low_power = false;
+    let mut last_flash = now_us();
 
     loop {
         let Some(byte) = uart.try_get_byte() else {
@@ -178,6 +191,10 @@ pub fn run(uart: Uart, dtb: u64) -> ! {
                 send_ready(&uart, limits);
                 last_beat = now;
                 last_rx = now;
+            } else if low_power {
+                // Quiet idle: LED dark with a brief flash on a slow tick, chirp
+                // rarely. Still polling, so a command is answered immediately.
+                low_power_idle(&uart, &mut last_beat, &mut last_flash);
             } else if !contacted && now.wrapping_sub(last_beat) >= HEARTBEAT_US {
                 last_beat = now;
                 uart.write_str("chainloader: up, waiting for host (HELLO)...\n");
@@ -197,9 +214,37 @@ pub fn run(uart: Uart, dtb: u64) -> ! {
             }
             Decoded::Frame(ty) => {
                 contacted = true;
-                handle_frame(&uart, &mut transfer, ty, decoder.payload(), limits, dtb)
+                handle_frame(
+                    &uart,
+                    &mut transfer,
+                    &mut low_power,
+                    ty,
+                    decoder.payload(),
+                    limits,
+                    dtb,
+                );
+                // Re-sync the low-power timers so a mode just entered starts its
+                // periods from now rather than firing immediately.
+                last_beat = now_us();
+                last_flash = now_us();
             }
         }
+    }
+}
+
+/// One low-power idle step: fire any due LED flash / heartbeat. The loader keeps
+/// polling the UART (so a command is answered at once), but with the LED dark and
+/// the heartbeat slow. A true `WFI` core-halt is deferred until the loader brings
+/// up an interrupt controller — the wake never fired without one on this board.
+fn low_power_idle(uart: &Uart, last_beat: &mut u32, last_flash: &mut u32) {
+    let now = now_us();
+    if now.wrapping_sub(*last_flash) >= FLASH_PERIOD_US {
+        *last_flash = now;
+        led::flash(FLASH_DURATION_US); // brief "still alive" blink
+    }
+    if now.wrapping_sub(*last_beat) >= LOW_POWER_HEARTBEAT_US {
+        *last_beat = now;
+        uart.write_str("chainloader: idle (low power)...\n");
     }
 }
 
@@ -207,6 +252,7 @@ pub fn run(uart: Uart, dtb: u64) -> ! {
 fn handle_frame(
     uart: &Uart,
     transfer: &mut Option<Transfer>,
+    low_power: &mut bool,
     ty: FrameType,
     payload: &[u8],
     limits: Limits,
@@ -215,7 +261,37 @@ fn handle_frame(
     match ty {
         FrameType::Hello => {
             *transfer = None; // a new session abandons any partial transfer
+            set_low_power(low_power, false); // a load implicitly wakes us
             send_ready(uart, limits);
+        }
+        FrameType::Mode => {
+            // Only meaningful while idle: never change gear under an in-flight
+            // image.
+            if transfer.is_some() {
+                send_error(uart, ErrorCode::Unexpected, 0);
+                return;
+            }
+            match Mode::from_bytes(payload) {
+                Err(_) => send_error(uart, ErrorCode::BadLength, 0),
+                Ok(m) => match m.mode {
+                    Mode::LOW_POWER => {
+                        set_low_power(low_power, true);
+                        send_frame(
+                            uart,
+                            FrameType::Idle,
+                            &Idle {
+                                heartbeat_secs: LOW_POWER_HEARTBEAT_SECS,
+                            }
+                            .to_bytes(),
+                        );
+                    }
+                    Mode::READY => {
+                        set_low_power(low_power, false);
+                        send_ready(uart, limits);
+                    }
+                    other => send_error(uart, ErrorCode::Unexpected, u32::from(other)),
+                },
+            }
         }
         FrameType::Header => match ImageHeader::from_bytes(payload) {
             Ok(header) => match validate_header(&header, limits) {
@@ -258,9 +334,24 @@ fn handle_frame(
             _ => send_error(uart, ErrorCode::NoImage, 0),
         },
         // These only ever travel Pi→host; receiving one means a confused peer.
-        FrameType::Ready | FrameType::Ack | FrameType::Error => {
+        FrameType::Ready | FrameType::Ack | FrameType::Error | FrameType::Idle => {
             send_error(uart, ErrorCode::Unexpected, 0);
         }
+    }
+}
+
+/// Applies an idle power-mode change: tracks the flag, arms or tears down the
+/// `WFI` wake sources, and sets the ACT LED (off in low power, steady otherwise).
+/// A no-op when the mode is unchanged, so repeat commands are harmless.
+fn set_low_power(low_power: &mut bool, on: bool) {
+    if *low_power == on {
+        return;
+    }
+    *low_power = on;
+    if on {
+        led::extinguish();
+    } else {
+        led::illuminate();
     }
 }
 
