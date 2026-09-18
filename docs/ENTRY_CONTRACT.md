@@ -1,12 +1,10 @@
-# AArch64 entry goal
+# AArch64 entry contract
 
-The **aspirational** entry state — what the loader aims to guarantee once the
-remaining planned work lands (the EL2 reload service). Secondary-core bring-up
-and the `x5`/`x6` handoff have landed, so most of this is now real;
-[`ENTRY_CONTRACT.md`](ENTRY_CONTRACT.md) remains the current, normative contract.
-This file fixes only the target *state* (the tables), so a kernel can be
-pre-planned against the eventual ABI — not how the loader will get there. Rows
-marked **†** still differ from today.
+The state the loader guarantees at the instant it enters a received image — the
+same for the boot core at handoff and for each secondary when released. An image
+built to these expectations runs identically whether it is the first or the tenth
+loaded in a session, without a power cycle. This is normative: independent loaders
+and payloads should both be able to rely on it.
 
 ## Processor state at entry (every core)
 
@@ -22,11 +20,11 @@ every core enters the payload in the same state.
 | I-cache         | Invalidated, so instruction fetch sees the loaded image.                            |
 | `DAIF`          | All masked (D, A, I, F).                                                            |
 | FP/SIMD         | Enabled (`CPACR_EL1.FPEN=0b11`); NEON usable.                                       |
-| Timers          | Counters readable at EL1; `CNTVOFF_EL2 = 0`; `CNTFRQ_EL0` valid †                   |
+| Timers          | Counters readable at EL1; `CNTVOFF_EL2 = 0`; `CNTFRQ_EL0` as firmware set it        |
 | UART            | PL011 (UART0) up at 115200 8N1 on GPIO14/15 (ALT0); usable without re-init.         |
 | `SP`            | `SP_EL1` = `load_addr_max` (window top)                                             |
 | `PC`            | Core 0: `load_addr + entry_off`. Secondary: the address the payload released it to. |
-| EL2 service     | Loader stays resident at EL2; reachable from EL1 via `HVC` (see below) †            |
+| EL2 service     | Loader stays resident at EL2; reachable from EL1 via `HVC` (see below)              |
 
 Secondaries are **quiescent** until released: none touches memory before the
 payload starts it, so core-0 init needs no cross-core synchronization.
@@ -92,5 +90,18 @@ can call back into it via `HVC`:
 Unknown immediates return with no effect, so an accidental `HVC`, or one built
 for a newer loader, is a safe no-op rather than a fault. The reload (`#0`) re-runs
 the transfer at EL2 and re-enters the payload under this same contract — no power
-cycle. See [`../PLANNED.md`](../PLANNED.md) (`hvc-reload-service`) for the cache
-and multi-core caveats.
+cycle; the handler flushes the data cache first, so a caller that had its MMU and
+caches on leaves no stale lines behind the download.
+
+Reload is a **boot-core** operation: `HVC #0` from a secondary is a no-op, and a
+payload that has started secondaries must quiesce them before reloading (a
+multi-core reload that re-parks running cores is future work).
+
+## Payload notes
+
+`VBAR_EL1 = 0` is a null base, not a handler: install a vector table before
+taking any exception. The loader zero-fills the BSS tail `[load_addr + image_len,
+load_addr + mem_len)`, so zero-initialized statics are already clear. Stay within
+the writable window `[x2, x3)` and clear of `[__loader_start, __loader_end)`, so a
+later `load` or `HVC #0` reload can reuse the still-resident loader. The loader
+never expects control back — it parks if a payload returns.

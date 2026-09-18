@@ -7,7 +7,7 @@
 //! loop polling its slot of [`SMP_MAILBOX`]. When the payload writes an EL1 entry
 //! address to that slot and `SEV`s, the core drops EL2→EL1 and branches there with
 //! the *same* register handoff core 0 received (differing only in `x8 = core_id`),
-//! reconstructed from [`SMP_HANDOFF`]. See `../docs/ENTRY_GOAL.md`.
+//! reconstructed from [`SMP_HANDOFF`]. See `../docs/ENTRY_CONTRACT.md`.
 //!
 //! A single-core payload simply never writes the mailbox, so the secondaries stay
 //! parked in the loader forever — harmless.
