@@ -32,12 +32,16 @@ cargo pi — load AArch64 bare-metal images onto a Raspberry Pi over UART
 USAGE:
     cargo pi load [OPTIONS]
     cargo pi console [OPTIONS]
+    cargo pi sleep [OPTIONS]
+    cargo pi wake [OPTIONS]
 
 COMMANDS:
     load       Build the payload, transfer it to the loader, and boot it
     console    Attach to the loader's serial port as a plain UART console
+    sleep      Put an idle loader into low-power idle (LED off, slow heartbeat)
+    wake       Return an idle loader to normal (steady LED, 1 s heartbeat)
 
-OPTIONS (load and console):
+OPTIONS (all commands):
     --port <DEV>          Serial device (default: sole /dev/cu.* USB adapter)
     --baud <RATE>         Baud rate (default: 115200)
 
@@ -62,6 +66,8 @@ fn main() -> ExitCode {
     let result = match rest.first().map(String::as_str) {
         Some("load") => run_load(&rest[1..]),
         Some("console") => run_console(&rest[1..]),
+        Some("sleep") => run_mode(&rest[1..], true),
+        Some("wake") => run_mode(&rest[1..], false),
         None | Some("help" | "-h" | "--help") => {
             println!("{USAGE}");
             return ExitCode::SUCCESS;
@@ -115,6 +121,17 @@ fn run_load(args: &[String]) -> Result<()> {
         session.console()?;
     }
     Ok(())
+}
+
+/// `cargo pi sleep` / `cargo pi wake`: command an idle loader into low-power idle
+/// or back to normal, over the same port.
+fn run_mode(args: &[String], low_power: bool) -> Result<()> {
+    let overrides = parse_overrides(args, false)?;
+    let cfg = Config::resolve(overrides)?;
+    let port = discover::resolve_port(cfg.port.as_deref())?;
+    eprintln!("Opening {port} @ {} baud...", cfg.baud);
+    let mut session = Session::open(&port, cfg.baud)?;
+    session.set_mode(low_power)
 }
 
 /// `cargo pi console`: attach to the serial port.

@@ -7,8 +7,8 @@ use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 
 use chainloader_protocol::{
-    Ack, DataFrame, Decoded, Decoder, ErrorMsg, FrameType, Hello, ImageHeader, MAX_FRAME,
-    MAX_PAYLOAD, PROTOCOL_VERSION, Ready, encode_frame,
+    Ack, DataFrame, Decoded, Decoder, ErrorMsg, FrameType, Hello, Idle, ImageHeader, MAX_FRAME,
+    MAX_PAYLOAD, Mode, PROTOCOL_VERSION, Ready, encode_frame,
 };
 use serialport::SerialPort;
 
@@ -152,6 +152,30 @@ impl Session {
                 Err(e) => return Err(e.into()),
             }
         }
+    }
+
+    /// Sets the loader's idle power mode via a `MODE` frame and waits for its
+    /// confirmation: `READY` for normal, `IDLE` (with the reduced heartbeat
+    /// period) for low-power. Only valid while the loader is idle.
+    pub(crate) fn set_mode(&mut self, low_power: bool) -> Result<()> {
+        let mode = if low_power {
+            Mode::LOW_POWER
+        } else {
+            Mode::READY
+        };
+        self.write_frame(FrameType::Mode, &Mode { mode }.to_bytes())?;
+        if low_power {
+            let payload = self.expect(FrameType::Idle)?;
+            let idle = Idle::from_bytes(&payload).map_err(|e| format!("malformed IDLE: {e}"))?;
+            eprintln!(
+                "Loader entered low-power idle; heartbeat every {}s.",
+                idle.heartbeat_secs
+            );
+        } else {
+            self.expect(FrameType::Ready)?;
+            eprintln!("Loader back to normal (ready).");
+        }
+        Ok(())
     }
 
     /// Encodes and writes one frame, flushing the port.
