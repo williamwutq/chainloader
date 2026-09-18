@@ -15,10 +15,11 @@
 //! - [`decoder`] — the streaming, resyncing [`Decoder`] that turns a raw byte
 //!   stream back into validated frames.
 //! - [`message`] — typed payload structs ([`Hello`], [`Ready`], [`ImageHeader`],
-//!   [`DataFrame`], [`Ack`], [`ErrorMsg`]) with one definition of each layout.
+//!   [`DataFrame`], [`Ack`], [`ErrorMsg`], [`Mode`], [`Idle`]) with one definition
+//!   of each layout.
 //!
 //! See `docs/PROTOCOL.md` for the full conversation (`HELLO`/`READY`/`HEADER`/
-//! `DATA`/`ACK`/`ERROR`/`BOOT`) and `docs/ENTRY_CONTRACT.md` for the AArch64
+//! `DATA`/`ACK`/`ERROR`/`BOOT`/`MODE`/`IDLE`) and `docs/ENTRY_CONTRACT.md` for the AArch64
 //! register/cache state the loader establishes before jumping.
 //!
 //! # Status
@@ -44,7 +45,9 @@ pub use frame::{
     EncodeError, FrameType, HEADER_LEN, MAGIC, MAGIC_HI, MAGIC_LO, MAX_FRAME, MAX_PAYLOAD,
     PROTOCOL_VERSION, TRAILER_LEN, encode_frame, frame_len,
 };
-pub use message::{Ack, DataFrame, ErrorCode, ErrorMsg, Hello, ImageHeader, MsgError, Ready};
+pub use message::{
+    Ack, DataFrame, ErrorCode, ErrorMsg, Hello, Idle, ImageHeader, Mode, MsgError, Ready,
+};
 
 /// Returns the version of this crate, as recorded in `Cargo.toml`.
 #[inline]

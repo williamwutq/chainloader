@@ -53,8 +53,8 @@ pub const fn frame_len(payload_len: usize) -> usize {
 /// The kind of a frame, occupying the single `type` byte.
 ///
 /// Direction is a convention, not enforced by the type: `Hello`, `Header`,
-/// `Data`, and `Boot` travel host→Pi; `Ready`, `Ack`, and `Error` travel
-/// Pi→host.
+/// `Data`, `Boot`, and `Mode` travel host→Pi; `Ready`, `Ack`, `Error`, and
+/// `Idle` travel Pi→host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum FrameType {
@@ -74,6 +74,12 @@ pub enum FrameType {
     Error = 0x06,
     /// host→Pi: hand control to the received image. No payload.
     Boot = 0x07,
+    /// host→Pi: set the loader's idle power mode. Payload: `mode: u8`
+    /// (`0` = ready/normal, `1` = low-power).
+    Mode = 0x08,
+    /// Pi→host: acknowledges entry to low-power idle. Payload:
+    /// `heartbeat_secs: u16` — the reduced heartbeat period.
+    Idle = 0x09,
 }
 
 impl FrameType {
@@ -89,6 +95,8 @@ impl FrameType {
             0x05 => Some(Self::Ack),
             0x06 => Some(Self::Error),
             0x07 => Some(Self::Boot),
+            0x08 => Some(Self::Mode),
+            0x09 => Some(Self::Idle),
             _ => None,
         }
     }
@@ -210,6 +218,8 @@ mod tests {
             FrameType::Ack,
             FrameType::Error,
             FrameType::Boot,
+            FrameType::Mode,
+            FrameType::Idle,
         ] {
             assert_eq!(FrameType::from_u8(ty.as_u8()), Some(ty));
         }

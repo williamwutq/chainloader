@@ -457,6 +457,74 @@ impl<'a> DataFrame<'a> {
     }
 }
 
+/// `MODE` payload (host→Pi): set the loader's idle power mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mode {
+    /// [`READY`](Self::READY) (normal) or [`LOW_POWER`](Self::LOW_POWER); other
+    /// values are rejected by the loader.
+    pub mode: u8,
+}
+
+impl Mode {
+    /// Encoded length in bytes.
+    pub const LEN: usize = 1;
+    /// Normal idle: LED steady, 1 s heartbeat, full-rate polling.
+    pub const READY: u8 = 0;
+    /// Low-power idle: LED mostly off, slow heartbeat, `WFI` core-halt.
+    pub const LOW_POWER: u8 = 1;
+
+    /// Serializes to its fixed byte layout.
+    #[inline]
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; Self::LEN] {
+        [self.mode]
+    }
+
+    /// Parses from at least [`LEN`](Self::LEN) bytes; extra trailing bytes are ignored.
+    ///
+    /// # Errors
+    ///
+    /// [`MsgError::Truncated`] if fewer than [`LEN`](Self::LEN) bytes are given.
+    #[inline]
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, MsgError> {
+        require(bytes.len(), Self::LEN)?;
+        Ok(Self { mode: bytes[0] })
+    }
+}
+
+/// `IDLE` payload (Pi→host): confirms the loader entered low-power idle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Idle {
+    /// The reduced heartbeat period, in seconds, so the host does not read the
+    /// coming quiet as a disconnect.
+    pub heartbeat_secs: u16,
+}
+
+impl Idle {
+    /// Encoded length in bytes.
+    pub const LEN: usize = 2;
+
+    /// Serializes to its fixed little-endian byte layout.
+    #[inline]
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; Self::LEN] {
+        self.heartbeat_secs.to_le_bytes()
+    }
+
+    /// Parses from at least [`LEN`](Self::LEN) bytes; extra trailing bytes are ignored.
+    ///
+    /// # Errors
+    ///
+    /// [`MsgError::Truncated`] if fewer than [`LEN`](Self::LEN) bytes are given.
+    #[inline]
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, MsgError> {
+        require(bytes.len(), Self::LEN)?;
+        Ok(Self {
+            heartbeat_secs: rd_u16(bytes, 0),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -471,6 +539,32 @@ mod tests {
         assert_eq!(Ack::LEN, 4);
         assert_eq!(ErrorMsg::LEN, 6);
         assert_eq!(DataFrame::HEADER, 4);
+        assert_eq!(Mode::LEN, 1);
+        assert_eq!(Idle::LEN, 2);
+    }
+
+    #[test]
+    fn mode_round_trip() {
+        for mode in [Mode::READY, Mode::LOW_POWER, 200] {
+            let m = Mode { mode };
+            assert_eq!(Mode::from_bytes(&m.to_bytes()), Ok(m));
+        }
+        assert_eq!(
+            Mode {
+                mode: Mode::LOW_POWER
+            }
+            .to_bytes(),
+            [1]
+        );
+    }
+
+    #[test]
+    fn idle_round_trip() {
+        let m = Idle {
+            heartbeat_secs: 120,
+        };
+        assert_eq!(Idle::from_bytes(&m.to_bytes()), Ok(m));
+        assert_eq!(m.to_bytes(), [120, 0]); // little-endian
     }
 
     #[test]
