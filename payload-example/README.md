@@ -26,13 +26,18 @@ handoff — to print what it received and park:
 Then, as an SMP smoke test, the boot core starts **core 1** through the release
 mailbox (`x7 + 8`, then `SEV`); core 1 re-enters this same image at EL1 with its
 own `x8 = 1` and prints a `[core 1] up …` line — proving the loader parked the
-secondaries and hands them off under the same contract.
+secondaries and hands them off under the same contract. Core 1 then requests the
+reload with **`HVC #0` from a secondary**, verifying the reload service works from
+any core: the loader forwards the request to the boot core (which stays core 0),
+so core 0 — which has parked — runs the reload.
 
 A successful run prints a `[payload-example] running` banner (and a `[core 1] up`
 line) over the serial console — the end-to-end signal that build → flatten →
-transfer → validate → jump, and secondary bring-up, all worked. It finishes with
-`HVC #0` to return to the loader via the reload service, ready for the next load
-without a power cycle (the loader re-parks core 1 first, so re-loading is safe).
+transfer → validate → jump, and secondary bring-up, all worked. The **boot core**
+performs the reload (re-parking the secondaries first, so re-loading is safe even
+though this run started one) and blinks the green ACT LED twice — a reload signal
+visible even without a serial console — leaving the loader ready for the next load
+without a power cycle.
 
 ## Build and load
 

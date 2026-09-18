@@ -8,10 +8,14 @@
 //! (build → flatten → transfer → validate → jump) works on real hardware.
 //!
 //! It also smoke-tests secondary-core bring-up: the boot core starts core 1 via
-//! the release mailbox (`x7`), and the secondary re-enters this same image at
-//! EL1 with `x8 = 1` and reports in. Finally the boot core `HVC #0`s back into
-//! the loader (the EL2 reload service), so it is ready for the next load without
-//! a power cycle.
+//! the release mailbox (`x7`), and the secondary re-enters this same image at EL1
+//! with `x8 = 1` and reports in. Core 1 then requests a reload with `HVC #0` —
+//! from a *secondary* — to verify the reload service works from any core: the
+//! loader forwards the request to the boot core (so it stays core 0), which
+//! re-parks the secondaries and re-runs the receive path. Core 0 itself just parks
+//! and waits for that forwarded request. The loader blinks the ACT LED twice on
+//! reload, a visible signal even without a serial console — so the whole path is
+//! ready for the next load without a power cycle.
 
 #![no_std]
 #![no_main]
@@ -25,6 +29,11 @@ use core::ptr::{read_volatile, write_volatile};
 const UART0_DR: usize = 0x3F20_1000;
 const UART0_FR: usize = 0x3F20_1018;
 const FR_TXFF: u32 = 1 << 5; // transmit FIFO full
+
+// Low word of the free-running 1 MHz system timer (runs from power-on, no setup),
+// for a coarse delay — used to let core 1 run its own HVC test before core 0
+// triggers the real reload, so the serial output stays ordered.
+const ST_CLO: usize = 0x3F00_3004;
 
 /// A small buffer that lands in `.bss`: zero-initialized, so it is *not* part of
 /// the transferred image (only its `memsz` is). It reads as zero at entry only
@@ -122,16 +131,24 @@ pub extern "C" fn main(handoff: *const Handoff) -> ! {
     unsafe { asm!("mrs {}, CurrentEL", out(reg) current_el) };
 
     if h.core_id != 0 {
-        // A secondary the boot core released via the mailbox.
+        // A secondary the boot core released via the mailbox. It requests a reload
+        // with `HVC #0` — verifying the service works from a non-boot core. The
+        // loader forwards the request to the boot core (which runs the reload, so
+        // it stays core 0) and re-parks this core, so this HVC does not return.
         let _ = writeln!(
             uart,
-            "[core {}] up at EL{}, sp own, abi {}, mailbox {:#x}",
+            "[core {}] up at EL{}, sp own, abi {}, mailbox {:#x}; HVC #0 to request reload",
             h.core_id,
             current_el >> 2,
             h.abi_version,
             h.mailbox
         );
-        park();
+        // Let core 0's lines flush before the reload re-inits the UART.
+        delay_us(50_000);
+        // SAFETY: traps to the resident EL2 loader, which forwards the reload to
+        // the boot core and re-parks this core — it does not return here.
+        unsafe { asm!("hvc #0") };
+        park(); // unreachable: the loader re-parks this core
     }
     let (load_addr, image_len, win_min, win_max, dtb, mailbox) = (
         h.load_addr,
@@ -201,14 +218,16 @@ pub extern "C" fn main(handoff: *const Handoff) -> ! {
         }
     }
 
-    // Jump right back into the loader via the EL2 reload service, so the loader
-    // is ready for the next `cargo pi load` without a power cycle. `HVC #0` on the
-    // boot core does not return; the loader re-parks core 1 first, so re-loading
-    // is safe even though this run started a secondary.
-    let _ = writeln!(uart, "[payload-example] HVC #0 -> loader reload.");
-    // SAFETY: traps to the resident EL2 loader, which reloads and never returns.
-    unsafe { asm!("hvc #0") };
-    park(); // unreachable on the boot core; a stray return still parks safely
+    // Core 0 does NOT reload here — core 1 requests it, and the loader runs the
+    // reload on the boot core (this core), keeping it core 0. Park so this core is
+    // available to catch that forwarded reload IPI: its FIQ is routed to the loader
+    // at EL2, so the IPI traps here and the loader's FIQ handler takes over. The
+    // reload never returns to the payload.
+    let _ = writeln!(
+        uart,
+        "[payload-example] core 0 parking; core 1 will request the reload."
+    );
+    park();
 }
 
 /// Idle the core forever.
@@ -216,6 +235,17 @@ fn park() -> ! {
     loop {
         // SAFETY: wait-for-event to idle the core.
         unsafe { asm!("wfe") };
+    }
+}
+
+/// Busy-waits roughly `us` microseconds against the free-running 1 MHz system
+/// timer (no setup — it runs from power-on). Lets core 1 finish its HVC test and
+/// flush its output before core 0 triggers the reload.
+fn delay_us(us: u32) {
+    // SAFETY: fixed, read-only timer register.
+    let start = unsafe { read_volatile(ST_CLO as *const u32) };
+    while unsafe { read_volatile(ST_CLO as *const u32) }.wrapping_sub(start) < us {
+        core::hint::spin_loop();
     }
 }
 
