@@ -30,7 +30,9 @@ secondaries and hands them off under the same contract.
 
 A successful run prints a `[payload-example] running` banner (and a `[core 1] up`
 line) over the serial console — the end-to-end signal that build → flatten →
-transfer → validate → jump, and secondary bring-up, all worked.
+transfer → validate → jump, and secondary bring-up, all worked. It finishes with
+`HVC #0` to return to the loader via the reload service, ready for the next load
+without a power cycle (after starting a secondary a *re-load* still needs one).
 
 ## Build and load
 

@@ -9,8 +9,9 @@
 //!
 //! It also smoke-tests secondary-core bring-up: the boot core starts core 1 via
 //! the release mailbox (`x7`), and the secondary re-enters this same image at
-//! EL1 with `x8 = 1` and reports in — proving the loader parked and hands off the
-//! secondaries under the same contract.
+//! EL1 with `x8 = 1` and reports in. Finally the boot core `HVC #0`s back into
+//! the loader (the EL2 reload service), so it is ready for the next load without
+//! a power cycle.
 
 #![no_std]
 #![no_main]
@@ -200,7 +201,14 @@ pub extern "C" fn main(handoff: *const Handoff) -> ! {
         }
     }
 
-    park();
+    // Jump right back into the loader via the EL2 reload service, so the loader
+    // is ready for the next `cargo pi load` without a power cycle. `HVC #0` on the
+    // boot core does not return. (Because this run started core 1, a *re-load*
+    // now needs a power cycle — see the contract's multi-core caveat.)
+    let _ = writeln!(uart, "[payload-example] HVC #0 -> loader reload.");
+    // SAFETY: traps to the resident EL2 loader, which reloads and never returns.
+    unsafe { asm!("hvc #0") };
+    park(); // unreachable on the boot core; a stray return still parks safely
 }
 
 /// Idle the core forever.
