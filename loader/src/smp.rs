@@ -152,6 +152,9 @@ secondary_trampoline:
     // EL2 -> EL1 config (mirrors the core-0 jump).
     movz    x12, #0x8000, lsl #16      // HCR_EL2.RW = 1: EL1 is AArch64
     msr     hcr_el2, x12
+    adrp    x12, el2_vectors           // resident EL2 vectors (HVC service)
+    add     x12, x12, :lo12:el2_vectors
+    msr     vbar_el2, x12
     mov     x12, #0b11                 // CNTHCTL_EL2: EL1PCTEN | EL1PCEN
     msr     cnthctl_el2, x12
     msr     cntvoff_el2, xzr

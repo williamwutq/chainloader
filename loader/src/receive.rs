@@ -410,6 +410,8 @@ unsafe fn jump(
             ABI_VERSION,
         );
         let mailbox = crate::smp::mailbox_base();
+        // Resident EL2 vector table, so the payload can `HVC` back in to reload.
+        let vbar_el2 = crate::hvc::vbar_el2();
         // EL1 setup values, precomputed so the `noreturn` asm needs no scratch:
         let hcr_el2: u64 = 1 << 31; // RW = 1: EL1 executes in AArch64
         let cnthctl_el2: u64 = 0b11; // EL1PCTEN | EL1PCEN: EL1 may read the timers
@@ -421,6 +423,7 @@ unsafe fn jump(
             "isb",
             // Drop EL2 -> EL1 (AArch64) and ERET into the image.
             "msr  hcr_el2, {hcr}",
+            "msr  vbar_el2, {vbar}",    // resident EL2 vectors for the HVC reload service
             "msr  cnthctl_el2, {cnthctl}",
             "msr  cntvoff_el2, xzr",
             "msr  sctlr_el1, {sctlr}",
@@ -490,6 +493,7 @@ unsafe fn jump(
             "movi v31.2d, #0",
             "eret",
             hcr = in(reg) hcr_el2,
+            vbar = in(reg) vbar_el2,
             cnthctl = in(reg) cnthctl_el2,
             sctlr = in(reg) sctlr_el1,
             spsr = in(reg) spsr_el2,

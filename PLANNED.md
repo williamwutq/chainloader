@@ -77,48 +77,6 @@ a load twice to prove the loader returns to `READY`. Fuzz the decoder with
   against an in-memory pipe, or rely on QEMU (`-M raspi2`). Leaning: the trait,
   since it also keeps the state machine unit-testable.
 
-## `hvc-reload-service` — kernel-requested reload without a power cycle
-
-**Crate:** `chainloader-loader`.
-**Breaking change:** No — additive; payloads that never `HVC` are unaffected.
-**Depends on:** the hardware-validated loader; interacts with the EL2→EL1 drop.
-
-### Motivation
-
-The loader stays resident after the jump (payloads may not overlap
-`[__loader_start, __loader_end)`), but it is not callable: its only entry re-runs
-the EL2 boot path, which faults now that the payload is at EL1. So the only way
-to load a new kernel is a power cycle. Since the whole tool exists for fast
-iteration, letting a running kernel ask for the next image is the natural win —
-and dropping the payload to EL1 already reserved EL2 for exactly this.
-
-### Design
-
-Before the `ERET`, install `VBAR_EL2` pointing at a resident loader vector table.
-The payload runs at EL1; EL2 is dormant but reachable. `HVC #0` from EL1 traps to
-EL2, where the handler resets `SP_EL2` to the loader stack, re-enters the receive
-loop, and drops the new image to EL1 exactly like the first boot — the same entry
-contract. `HCR_EL2.HCD` is already 0, so `HVC` is enabled; the loader's
-code/data/stack are already protected from the payload. The `HVC` immediate
-(`ESR_EL2.ISS`) selects the service, leaving room to grow (`#0` = reload); any
-other immediate is invalid and simply `ERET`s straight back to the caller, so an
-accidental or forward-version `HVC` is a harmless no-op. That no-op return means
-even v1 needs a return path: the dispatcher must preserve any caller GPR it reads
-(the trap already banked `ELR_EL2`/`SPSR_EL2`, so the tail is a bare `ERET`).
-
-### Open questions
-
-- **Cache coherency on reload.** A payload that enabled its EL1 MMU/caches has
-  dirty lines the EL2 (physical, MMU-off) handler will not see, and the new
-  image's stores must reach the caller-visible view. Broadly clean+invalidate in
-  the handler, or require the caller to clean/disable caches before `HVC`?
-  Leaning: the handler does the maintenance, so the ABI stays "just `HVC #0`".
-- **Result-returning services.** A service that returns *results* to the caller
-  needs a defined status register (and possibly output registers) — settle the
-  convention when the first such service appears.
-- **Multi-core.** If secondaries are running when a core reloads, they must be
-  quiesced (re-parked) first. Interacts with `smp-secondary-bringup`.
-
 ## `board-detect` — support the BCM283x (`0x3F00_0000`) family
 
 **Crate:** `chainloader-loader`.

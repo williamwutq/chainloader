@@ -14,6 +14,7 @@
 #![no_std]
 #![no_main]
 
+mod hvc;
 mod led;
 mod mailbox;
 mod receive;
@@ -93,6 +94,9 @@ pub extern "C" fn loader_main(dtb: u64) -> ! {
         chainloader_protocol::PROTOCOL_VERSION,
     );
     let _ = writeln!(uart, "UART up @ 115200 8N1. Waiting for host (HELLO).");
+
+    // Record the device tree for a later `HVC #0` reload to replay.
+    hvc::set_reload_dtb(dtb);
 
     // Hand off to the protocol state machine; it never returns (it either
     // branches to a loaded image or keeps servicing the link).
