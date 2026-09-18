@@ -412,8 +412,14 @@ unsafe fn jump(
         let mailbox = crate::smp::mailbox_base();
         // Resident EL2 vector table, so the payload can `HVC` back in to reload.
         let vbar_el2 = crate::hvc::vbar_el2();
+        // Route the boot core's mailbox-0 to FIQ, like the secondaries. Reload
+        // always runs on the boot core (so it stays core 0), so a secondary's
+        // `HVC #0` pings this mailbox; with FMO below, that traps the boot core to
+        // EL2's fiq handler, which runs the reload.
+        // SAFETY: fixed ARM-local mailbox int-control register for core 0.
+        core::ptr::write_volatile(0x4000_0050 as *mut u32, 0x10);
         // EL1 setup values, precomputed so the `noreturn` asm needs no scratch:
-        let hcr_el2: u64 = 1 << 31; // RW = 1: EL1 executes in AArch64
+        let hcr_el2: u64 = (1 << 31) | (1 << 3); // RW=1 (EL1 AArch64), FMO=1 (FIQ->EL2)
         let cnthctl_el2: u64 = 0b11; // EL1PCTEN | EL1PCEN: EL1 may read the timers
         let sctlr_el1: u64 = 0x30d0_0800; // MMU/caches off, architectural RES1 bits
         let spsr_el2: u64 = 0x3c5; // return to EL1h with DAIF masked

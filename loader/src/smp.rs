@@ -125,11 +125,14 @@ pub unsafe fn release(
     }
 }
 
-/// Forces every *running* secondary back into the trampoline park loop, for a
-/// safe reload. Sends each active core a mailbox IPI — routed to EL2 as a FIQ
-/// (`HCR_EL2.FMO` on secondaries), where `fiq_repark` re-enters the trampoline —
-/// then waits until it has re-parked. A single-core payload started none, so this
-/// is a no-op. Call on the boot core, at EL2, before re-running the receive path.
+/// Forces every *running* secondary back into the trampoline park loop, for a safe
+/// reload. Sends each active core a mailbox IPI — routed to EL2 as a FIQ
+/// (`HCR_EL2.FMO`), where `fiq_dispatch` re-enters the trampoline — then waits
+/// until it has re-parked. A single-core payload started none, so this is a no-op.
+///
+/// Runs on the boot core: reload always happens there (a secondary's `HVC #0` is
+/// forwarded to core 0), so the reloading core is never among cores 1–3 and needs
+/// no self-exclusion.
 ///
 /// # Safety
 ///
@@ -138,7 +141,7 @@ pub unsafe fn quiesce_secondaries() {
     for (core, active) in SMP_ACTIVE.iter().enumerate().skip(1) {
         if active.load(Ordering::Relaxed) != 0 {
             // SAFETY: fixed per-core mailbox-0 set register; the write traps the
-            // core to EL2 (FMO), where `fiq_repark` re-enters the trampoline.
+            // core to EL2 (FMO), where `fiq_dispatch` re-enters the trampoline.
             unsafe { write_volatile((LOCAL_MBOX0_SET + 0x10 * core) as *mut u32, 1) };
         }
     }
@@ -190,6 +193,9 @@ secondary_trampoline:
 1:  wfe
     ldr     x10, [x9]                  // x10 = requested EL1 entry (0 = keep waiting)
     cbz     x10, 1b
+    str     xzr, [x9]                  // consume the slot: clear it so a later
+                                       // re-park (after an HVC) waits instead of
+                                       // relaunching on this stale entry
 
     // Released: mark this core active before it runs the payload.
     adrp    x11, SMP_ACTIVE
@@ -201,6 +207,15 @@ secondary_trampoline:
     ic      iallu
     dsb     sy
     isb
+
+    // Drain any stale reload IPI for this core (e.g. a re-park request that landed
+    // while it was parked), so entering the payload with FMO set does not trap
+    // straight back to fiq_dispatch. Read/clear this core's mailbox-0.
+    movz    x11, #0x4000, lsl #16
+    add     x11, x11, #0xc0
+    add     x11, x11, x8, lsl #4       // 0x4000_00C0 + 0x10*core: mailbox-0 read/clear
+    ldr     w12, [x11]
+    str     w12, [x11]                 // write-1-to-clear whatever is pending
 
     // Rebuild the x0-x6 contract from core 0's published handoff.
     adrp    x11, SMP_HANDOFF

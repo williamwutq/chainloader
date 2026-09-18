@@ -63,6 +63,11 @@ core *N*: write its EL1 entry address to slot *N*, then `SEV`. The core leaves
 its `WFE`, adopts the processor state above, and branches there with the full
 register handoff (its own `x8 = N`).
 
+The slot is a **doorbell**: the loader clears it back to `0` the moment the core
+takes it, so the value is not readable afterwards as a "started" flag, and a core
+that later re-parks (e.g. after an `HVC #0`) waits again rather than relaunching
+on the old address. Write it once per start.
+
 | Slot      | Core | Contents                                       |
 |-----------|------|------------------------------------------------|
 | `x7 + 0`  | 0    | `0` — unused (boot core), zeroed like the rest |
@@ -93,11 +98,16 @@ the transfer at EL2 and re-enters the payload under this same contract — no po
 cycle; the handler flushes the data cache first, so a caller that had its MMU and
 caches on leaves no stale lines behind the download.
 
-Reload is a **boot-core** operation (`HVC #0` from a secondary is a no-op), and it
-is safe with SMP: before reloading, the loader forces any running secondary back
-into its parked state with a per-core IPI. That IPI routes each **secondary's
-FIQ** to the loader, so a secondary-core payload must use **IRQ** (not FIQ) for
-its own interrupts; the boot core keeps both, and IRQ is usable everywhere.
+`HVC #0` may be issued from **any** core. The reload always runs on the **boot
+core** (so it stays core 0): a secondary's `HVC #0` is forwarded to the boot core
+via a per-core IPI and the secondary re-parks itself. The reloading boot core then
+forces any still-running secondary back into its parked state with the same IPI,
+so reload is safe with SMP regardless of which core requested it.
+
+This uses one interrupt per core: **every core routes its FIQ to the loader**
+(for the reload request on the boot core, and the re-park on secondaries), so a
+payload uses **IRQ** (not FIQ) for its own interrupts on every core. FIQ belongs
+to the loader everywhere; IRQ is usable everywhere.
 
 ## Payload notes
 

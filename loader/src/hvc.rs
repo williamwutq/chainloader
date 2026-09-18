@@ -8,10 +8,13 @@
 //! - `HVC #n` (n ≠ 0) — no-op: return to the caller immediately, unchanged.
 //!
 //! An unknown immediate returning cleanly means an accidental or forward-version
-//! `HVC` is a harmless no-op rather than a fault. `HVC #0` is a **boot-core**
-//! operation (a secondary's `#0` is a no-op); before reloading, the handler
-//! quiesces any running secondaries — see [`crate::smp::quiesce_secondaries`] —
-//! so reload is safe with SMP. See `../docs/ENTRY_CONTRACT.md`.
+//! `HVC` is a harmless no-op rather than a fault. `HVC #0` reloads from **any**
+//! core, but the reload always runs on the **boot core** so it stays core 0: a
+//! secondary's `HVC #0` pings core 0's mailbox (routed to its FIQ) and re-parks
+//! itself, and core 0's FIQ handler performs the reload. Before reloading, the
+//! handler quiesces the running secondaries — see
+//! [`crate::smp::quiesce_secondaries`]. Every core routes FIQ to the loader for
+//! this; payloads use IRQ. See `../docs/ENTRY_CONTRACT.md`.
 
 use core::arch::global_asm;
 use core::fmt::Write as _;
@@ -61,6 +64,13 @@ extern "C" fn hvc_reload() -> ! {
         uart,
         "\nchainloader: HVC #0 reload; waiting for host (HELLO)."
     );
+    // Two ACT-LED blinks: a reload is visible without a serial console, and
+    // distinct from the boot burst (three). Also reclaims the LED from a payload
+    // that was driving it (a re-parked secondary no longer touches it). Leaves it
+    // lit as the steady "waiting for host" light.
+    // SAFETY: boot core at EL2; secondaries are quiesced, so this is the only
+    // GPIO user now.
+    unsafe { crate::led::signal_alive(2) };
     receive::run(uart, RELOAD_DTB.load(Ordering::Relaxed))
 }
 
@@ -94,7 +104,7 @@ el2_vectors:
     .balign 0x80
     b   el2_return          // 0x480 Lower EL AArch64 IRQ
     .balign 0x80
-    b   fiq_repark          // 0x500 Lower EL AArch64 FIQ  <- reload re-park IPI
+    b   fiq_dispatch        // 0x500 Lower EL AArch64 FIQ  <- reload/re-park IPI
     .balign 0x80
     b   el2_return          // 0x580 Lower EL AArch64 SError
     .balign 0x80
@@ -107,35 +117,56 @@ el2_vectors:
     b   el2_return          // 0x780 Lower EL AArch32 SError
     .balign 0x80
 
-// Dispatch a synchronous trap from EL1. HVC #0 on the boot core reloads; anything
-// else returns to the caller unchanged. Preserves the caller's x0/x1 (the only
-// registers it reads) across the no-op return path.
+// Dispatch a synchronous trap from EL1. HVC #0 from ANY core reloads; anything
+// else returns to the caller unchanged. Uses no stack — secondaries have no valid
+// SP_EL2 — so it stashes its one scratch register in TPIDR_EL2 (an EL2-only
+// scratch the EL1 payload cannot touch) instead of pushing, and never reads x1, so
+// both caller registers survive the no-op return.
 hvc_dispatch:
-    stp     x0, x1, [sp, #-16]!    // save caller x0/x1 (SP_EL2 is a valid stack)
+    msr     tpidr_el2, x0          // stash caller x0 (no stack); x1 left untouched
     mrs     x0, esr_el2
-    lsr     x1, x0, #26            // EC = ESR_EL2[31:26]
-    cmp     x1, #0x16              // HVC in AArch64?
-    b.ne    el2_return_restore
+    lsr     x0, x0, #26            // EC = ESR_EL2[31:26]
+    cmp     x0, #0x16              // HVC in AArch64?
+    b.ne    hvc_noop
+    mrs     x0, esr_el2
     and     x0, x0, #0xffff        // ISS[15:0] = the HVC immediate
-    cbnz    x0, el2_return_restore // non-zero immediate: no-op
-    mrs     x1, mpidr_el1
-    and     x1, x1, #0xff          // reload only from the boot core
-    cbnz    x1, el2_return_restore
-    // HVC #0 on core 0: reset SP_EL2 to the loader stack and hand off to Rust.
-    ldr     x0, =__stack_top
+    cbnz    x0, hvc_noop           // non-zero immediate: no-op
+    // HVC #0. Reload always runs on the BOOT core, so it stays core 0 (secondaries
+    // never become the boot core). From the boot core, reload here; from a
+    // secondary, ping core 0's mailbox — its FIQ is routed to EL2, where
+    // fiq_dispatch runs the reload — and re-park this core.
+    mrs     x0, mpidr_el1
+    and     x0, x0, #0xff          // core_id (nonzero on a secondary)
+    cbz     x0, hvc_reload_entry   // boot core: reload here
+    // Secondary: mark parked BEFORE requesting, so the boot core's quiesce sees
+    // this core already down and does not send it a redundant re-park IPI. Then
+    // ping core 0's mailbox and re-park. x0/x1 are dead across the trampoline,
+    // which rebuilds them.
+    adrp    x1, SMP_ACTIVE
+    add     x1, x1, :lo12:SMP_ACTIVE
+    str     xzr, [x1, x0, lsl #3]  // SMP_ACTIVE[core_id] = 0
+    dsb     sy                     // visible before the ping traps core 0
+    movz    x1, #0x4000, lsl #16
+    add     x1, x1, #0x80          // 0x4000_0080 = core 0 mailbox-0 write-set
+    mov     w0, #1
+    str     w0, [x1]
+    b       secondary_trampoline   // re-park self; core 0 performs the reload
+hvc_reload_entry:
+    ldr     x0, =__stack_top       // reset SP to the loader stack; reload never returns
     mov     sp, x0
     b       hvc_reload
 
-el2_return_restore:
-    ldp     x0, x1, [sp], #16      // restore caller x0/x1
+hvc_noop:
+    mrs     x0, tpidr_el2          // restore caller x0 (x1 was never touched)
 el2_return:
     eret
 
-// A running secondary's FIQ, routed to EL2 by HCR_EL2.FMO, lands here. If it is
-// the loader's reload IPI (this core's mailbox 0 pending), clear it and re-enter
-// the trampoline to re-park; otherwise return to the caller. Runs at EL2, uses no
-// stack. Only secondaries route FIQ here (the boot core keeps FMO = 0).
-fiq_repark:
+// A core's FIQ, routed to EL2 by HCR_EL2.FMO, lands here. Every core routes FIQ
+// to the loader now. If this core's mailbox 0 is pending (the loader's IPI), clear
+// it: on the BOOT core that IPI is a secondary's reload request, so run the
+// reload; on a SECONDARY it is the reload re-park, so re-enter the trampoline.
+// Otherwise return to the caller. Runs at EL2, uses no stack.
+fiq_dispatch:
     mrs     x0, mpidr_el1
     and     x0, x0, #0xff          // core_id
     movz    x1, #0x4000, lsl #16
@@ -143,8 +174,9 @@ fiq_repark:
     add     x1, x1, x0, lsl #4     // 0x4000_00C0 + 0x10*core: mailbox-0 read/clear
     ldr     w2, [x1]
     cbz     w2, 1f                 // not our IPI: return to the caller
-    str     w2, [x1]               // write-1-to-clear, deasserting the IRQ
-    b       secondary_trampoline   // re-park (does not return here)
+    str     w2, [x1]               // write-1-to-clear, deasserting the FIQ
+    cbz     x0, hvc_reload_entry   // boot core: reload request -> perform reload
+    b       secondary_trampoline   // secondary: re-park (does not return here)
 1:  eret
 
 // Clean and invalidate the entire data cache to the point of coherence, so a
