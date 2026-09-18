@@ -11,6 +11,8 @@ handoff — to print what it received and park:
 - the exception level (expects **EL1**);
 - `x0`–`x4`: `load_addr`, `image_len`, the writable window `[min, max)`, and the
   DTB pointer;
+- `x5`/`x6`: the verified DTB size (`totalsize`, `0` if no tree) and the entry-ABI
+  version;
 - `x7`/`x8`: the secondary release-mailbox base and the core id (`0` on the boot
   core);
 - an FP multiply — which **faults if NEON were still trapped**, so a clean line

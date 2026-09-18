@@ -59,23 +59,42 @@ impl Write for Uart {
     }
 }
 
-// Entry shim. The loader `ERET`s here at EL1 with the handoff in `x0`–`x8`. The
-// C ABI only carries `x0`–`x7` as arguments, so move `x7` (release mailbox) and
-// `x8` (core id) into `x5`/`x6` and tail-call `main` with them as the 6th/7th
-// args. Secondaries also drop `SP` by `core_id * 64 KiB` so each runs on its own
-// stack instead of colliding with core 0 at the window top.
+/// The full `x0`–`x8` register handoff, captured by the `_start` shim, in the
+/// order it pushes them. `#[repr(C)]` so the field offsets match the stores.
+#[repr(C)]
+pub struct Handoff {
+    load_addr: u64,
+    image_len: u64,
+    win_min: u64,
+    win_max: u64,
+    dtb: u64,
+    dtb_size: u64,
+    abi_version: u64,
+    mailbox: u64,
+    core_id: u64,
+}
+
+// Entry shim. The loader `ERET`s here at EL1 with the handoff in `x0`–`x8`, one
+// more register than the C ABI carries as arguments, so push all nine to the
+// stack and pass a pointer to that `Handoff`. Secondaries first drop `SP` by
+// `core_id * 64 KiB` so each runs on its own stack rather than colliding with
+// core 0 at the window top.
 global_asm!(
     r#"
 .section .text.boot
 .global _start
 _start:
-    mov     x5, x7                 // 6th arg: release mailbox base
-    mov     x6, x8                 // 7th arg: core id
     cbz     x8, 1f                 // boot core keeps SP at the window top
     mov     x9, sp
     sub     x9, x9, x8, lsl #16    // secondary N: SP -= N * 64 KiB (own stack)
     mov     sp, x9
-1:  b       main
+1:  stp     x0, x1, [sp, #-80]!    // push the x0-x8 handoff; sp -> Handoff base
+    stp     x2, x3, [sp, #16]
+    stp     x4, x5, [sp, #32]
+    stp     x6, x7, [sp, #48]
+    str     x8, [sp, #64]
+    mov     x0, sp                 // &Handoff
+    b       main
 "#
 );
 
@@ -85,34 +104,42 @@ unsafe extern "C" {
     static _start: u8;
 }
 
-/// Payload body, reached from the `_start` shim with the register handoff as
-/// arguments (`x7`→`mailbox`, `x8`→`core_id`). Runs on every core that enters.
+/// Payload body, reached from the `_start` shim with a pointer to the captured
+/// [`Handoff`]. Runs on every core that enters.
+// The pointer comes from the entry shim (an FFI boundary), not arbitrary callers.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[unsafe(no_mangle)]
-pub extern "C" fn main(
-    load_addr: u64,
-    image_len: u64,
-    win_min: u64,
-    win_max: u64,
-    dtb: u64,
-    mailbox: u64,
-    core_id: u64,
-) -> ! {
+pub extern "C" fn main(handoff: *const Handoff) -> ! {
     let mut uart = Uart;
+    // SAFETY: the shim pushed a valid `Handoff` at this address on the current
+    // core's stack, above `main`'s frame, so it stays live for this read.
+    let h = unsafe { &*handoff };
 
     // CurrentEL[3:2] is the exception level: proves the loader dropped us to EL1.
     let current_el: u64;
     // SAFETY: reads a system register.
     unsafe { asm!("mrs {}, CurrentEL", out(reg) current_el) };
 
-    if core_id != 0 {
+    if h.core_id != 0 {
         // A secondary the boot core released via the mailbox.
         let _ = writeln!(
             uart,
-            "[core {core_id}] up at EL{}, sp own, mailbox {mailbox:#x}",
-            current_el >> 2
+            "[core {}] up at EL{}, sp own, abi {}, mailbox {:#x}",
+            h.core_id,
+            current_el >> 2,
+            h.abi_version,
+            h.mailbox
         );
         park();
     }
+    let (load_addr, image_len, win_min, win_max, dtb, mailbox) = (
+        h.load_addr,
+        h.image_len,
+        h.win_min,
+        h.win_max,
+        h.dtb,
+        h.mailbox,
+    );
 
     // FP/SIMD smoke test: if the trap were still set this faults. `black_box`
     // stops the multiply being const-folded, so a real `fmul` runs. Printed as
@@ -128,8 +155,10 @@ pub extern "C" fn main(
     let _ = writeln!(uart, "  x2 win_min   = {win_min:#x}");
     let _ = writeln!(uart, "  x3 win_max   = {win_max:#x}");
     let _ = writeln!(uart, "  x4 dtb       = {dtb:#x}");
+    let _ = writeln!(uart, "  x5 dtb_size  = {:#x}", h.dtb_size);
+    let _ = writeln!(uart, "  x6 abi_ver   = {}", h.abi_version);
     let _ = writeln!(uart, "  x7 mailbox   = {mailbox:#x}");
-    let _ = writeln!(uart, "  x8 core_id   = {core_id}");
+    let _ = writeln!(uart, "  x8 core_id   = {}", h.core_id);
     let _ = writeln!(uart, "  fp 2.0*3.0   = {fp}");
 
     // BSS zeroing check. `SCRATCH` is in .bss, so it is never transferred; it is
