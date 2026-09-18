@@ -93,9 +93,11 @@ the transfer at EL2 and re-enters the payload under this same contract — no po
 cycle; the handler flushes the data cache first, so a caller that had its MMU and
 caches on leaves no stale lines behind the download.
 
-Reload is a **boot-core** operation: `HVC #0` from a secondary is a no-op, and a
-payload that has started secondaries must quiesce them before reloading (a
-multi-core reload that re-parks running cores is future work).
+Reload is a **boot-core** operation (`HVC #0` from a secondary is a no-op), and it
+is safe with SMP: before reloading, the loader forces any running secondary back
+into its parked state with a per-core IPI. That IPI routes each **secondary's
+FIQ** to the loader, so a secondary-core payload must use **IRQ** (not FIQ) for
+its own interrupts; the boot core keeps both, and IRQ is usable everywhere.
 
 ## Payload notes
 

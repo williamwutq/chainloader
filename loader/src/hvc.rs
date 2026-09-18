@@ -8,9 +8,10 @@
 //! - `HVC #n` (n ≠ 0) — no-op: return to the caller immediately, unchanged.
 //!
 //! An unknown immediate returning cleanly means an accidental or forward-version
-//! `HVC` is a harmless no-op rather than a fault. Reload is a **boot-core**
-//! operation — a secondary's `HVC #0` is treated as a no-op (see the multi-core
-//! caveat in `../PLANNED.md`). See `../docs/ENTRY_CONTRACT.md`.
+//! `HVC` is a harmless no-op rather than a fault. `HVC #0` is a **boot-core**
+//! operation (a secondary's `#0` is a no-op); before reloading, the handler
+//! quiesces any running secondaries — see [`crate::smp::quiesce_secondaries`] —
+//! so reload is safe with SMP. See `../docs/ENTRY_CONTRACT.md`.
 
 use core::arch::global_asm;
 use core::fmt::Write as _;
@@ -45,6 +46,10 @@ pub fn vbar_el2() -> u64 {
 /// re-runs the receive path to download and boot a new image. Never returns.
 #[unsafe(no_mangle)]
 extern "C" fn hvc_reload() -> ! {
+    // Force any running secondary back into the loader before the image is
+    // overwritten, so the reload is safe with SMP.
+    // SAFETY: boot core at EL2.
+    unsafe { crate::smp::quiesce_secondaries() };
     // SAFETY: at EL2 on the boot core with a fresh loader stack. Flushing every
     // D-cache level makes the physical, MMU-off download that follows coherent
     // regardless of what the previous payload cached.
@@ -89,7 +94,7 @@ el2_vectors:
     .balign 0x80
     b   el2_return          // 0x480 Lower EL AArch64 IRQ
     .balign 0x80
-    b   el2_return          // 0x500 Lower EL AArch64 FIQ
+    b   fiq_repark          // 0x500 Lower EL AArch64 FIQ  <- reload re-park IPI
     .balign 0x80
     b   el2_return          // 0x580 Lower EL AArch64 SError
     .balign 0x80
@@ -125,6 +130,22 @@ el2_return_restore:
     ldp     x0, x1, [sp], #16      // restore caller x0/x1
 el2_return:
     eret
+
+// A running secondary's FIQ, routed to EL2 by HCR_EL2.FMO, lands here. If it is
+// the loader's reload IPI (this core's mailbox 0 pending), clear it and re-enter
+// the trampoline to re-park; otherwise return to the caller. Runs at EL2, uses no
+// stack. Only secondaries route FIQ here (the boot core keeps FMO = 0).
+fiq_repark:
+    mrs     x0, mpidr_el1
+    and     x0, x0, #0xff          // core_id
+    movz    x1, #0x4000, lsl #16
+    add     x1, x1, #0xc0
+    add     x1, x1, x0, lsl #4     // 0x4000_00C0 + 0x10*core: mailbox-0 read/clear
+    ldr     w2, [x1]
+    cbz     w2, 1f                 // not our IPI: return to the caller
+    str     w2, [x1]               // write-1-to-clear, deasserting the IRQ
+    b       secondary_trampoline   // re-park (does not return here)
+1:  eret
 
 // Clean and invalidate the entire data cache to the point of coherence, so a
 // caller that ran with caches on leaves no dirty lines behind the MMU-off reload.

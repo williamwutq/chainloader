@@ -203,8 +203,8 @@ pub extern "C" fn main(handoff: *const Handoff) -> ! {
 
     // Jump right back into the loader via the EL2 reload service, so the loader
     // is ready for the next `cargo pi load` without a power cycle. `HVC #0` on the
-    // boot core does not return. (Because this run started core 1, a *re-load*
-    // now needs a power cycle — see the contract's multi-core caveat.)
+    // boot core does not return; the loader re-parks core 1 first, so re-loading
+    // is safe even though this run started a secondary.
     let _ = writeln!(uart, "[payload-example] HVC #0 -> loader reload.");
     // SAFETY: traps to the resident EL2 loader, which reloads and never returns.
     unsafe { asm!("hvc #0") };

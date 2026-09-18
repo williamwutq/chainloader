@@ -11,6 +11,10 @@
 //!
 //! A single-core payload simply never writes the mailbox, so the secondaries stay
 //! parked in the loader forever — harmless.
+//!
+//! On an `HVC #0` reload, [`quiesce_secondaries`] forces any running secondary
+//! back into the trampoline (via a per-core mailbox IPI routed to EL2 as a FIQ)
+//! so the reload is safe with SMP; see [`crate::hvc`].
 
 use core::arch::{asm, global_asm};
 use core::ptr::write_volatile;
@@ -43,11 +47,27 @@ pub static SMP_HANDOFF: [AtomicU64; 7] = [
     AtomicU64::new(0),
 ];
 
+/// `1` while core *N* is running the payload (has left the trampoline), `0` while
+/// parked. Lets [`quiesce_secondaries`] IPI exactly the running cores and wait for
+/// each to re-park. Slot 0 (boot core) is unused. Maintained by the trampoline.
+#[unsafe(no_mangle)]
+pub static SMP_ACTIVE: [AtomicU64; 4] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+
 /// Firmware spin-table release words (armstub8): core *N* spins on these at EL2
 /// until a non-zero jump address is written and an event signalled.
 const SPIN_CORE1: usize = 0xe0;
 const SPIN_CORE2: usize = 0xe8;
 const SPIN_CORE3: usize = 0xf0;
+
+/// BCM2836/7 ARM-local per-core mailbox-0 write-set register (`+ 0x10*core`).
+/// Writing it, with that core's mailbox routed to FIQ, traps the core to EL2 so
+/// the loader can re-park it — the reload IPI. See [`quiesce_secondaries`].
+const LOCAL_MBOX0_SET: usize = 0x4000_0080;
 
 unsafe extern "C" {
     /// The resident trampoline label released cores enter at EL2.
@@ -105,6 +125,31 @@ pub unsafe fn release(
     }
 }
 
+/// Forces every *running* secondary back into the trampoline park loop, for a
+/// safe reload. Sends each active core a mailbox IPI — routed to EL2 as a FIQ
+/// (`HCR_EL2.FMO` on secondaries), where `fiq_repark` re-enters the trampoline —
+/// then waits until it has re-parked. A single-core payload started none, so this
+/// is a no-op. Call on the boot core, at EL2, before re-running the receive path.
+///
+/// # Safety
+///
+/// Boot core at EL2, MMU off; performs ARM-local-peripheral MMIO.
+pub unsafe fn quiesce_secondaries() {
+    for (core, active) in SMP_ACTIVE.iter().enumerate().skip(1) {
+        if active.load(Ordering::Relaxed) != 0 {
+            // SAFETY: fixed per-core mailbox-0 set register; the write traps the
+            // core to EL2 (FMO), where `fiq_repark` re-enters the trampoline.
+            unsafe { write_volatile((LOCAL_MBOX0_SET + 0x10 * core) as *mut u32, 1) };
+        }
+    }
+    // Wait for each to re-park (the trampoline clears its SMP_ACTIVE slot).
+    for slot in &SMP_ACTIVE[1..] {
+        while slot.load(Ordering::Acquire) != 0 {
+            core::hint::spin_loop();
+        }
+    }
+}
+
 // The secondary trampoline. Entered at EL2 by a core the firmware releases from
 // its spin-table. Enables FP/SIMD, parks in a WFE loop on the core's mailbox
 // slot, and on release rebuilds the x0-x4 handoff, adds x7 (mailbox) / x8
@@ -126,13 +171,31 @@ secondary_trampoline:
     msr     cpacr_el1, x0
     isb
 
-    // Park until the payload writes this core's release slot.
+    // Route this core's mailbox 0 to FIQ, so the boot core's reload IPI traps
+    // this core to EL2 (see quiesce_secondaries / fiq_repark). FIQ bits are the
+    // high nibble of the mailbox int-control register: mailbox 0 -> FIQ = 0x10.
+    movz    x9, #0x4000, lsl #16
+    add     x9, x9, #0x50
+    add     x9, x9, x8, lsl #2         // 0x4000_0050 + 4*core_id (mbox int control)
+    mov     w10, #0x10                 // mailbox 0 -> FIQ
+    str     w10, [x9]
+
+    // Mark this core parked, then wait for the payload to write its release slot.
+    adrp    x11, SMP_ACTIVE
+    add     x11, x11, :lo12:SMP_ACTIVE
+    str     xzr, [x11, x8, lsl #3]     // SMP_ACTIVE[core_id] = 0
     adrp    x9, SMP_MAILBOX
     add     x9, x9, :lo12:SMP_MAILBOX
     add     x9, x9, x8, lsl #3         // &SMP_MAILBOX[core_id]
 1:  wfe
     ldr     x10, [x9]                  // x10 = requested EL1 entry (0 = keep waiting)
     cbz     x10, 1b
+
+    // Released: mark this core active before it runs the payload.
+    adrp    x11, SMP_ACTIVE
+    add     x11, x11, :lo12:SMP_ACTIVE
+    mov     x12, #1
+    str     x12, [x11, x8, lsl #3]     // SMP_ACTIVE[core_id] = 1
 
     // This core's I-cache must see the image (D-cache already clean to PoC).
     ic      iallu
@@ -149,8 +212,10 @@ secondary_trampoline:
     adrp    x7, SMP_MAILBOX
     add     x7, x7, :lo12:SMP_MAILBOX  // x7 = release mailbox base
 
-    // EL2 -> EL1 config (mirrors the core-0 jump).
+    // EL2 -> EL1 config (mirrors the core-0 jump, plus FMO so this secondary's
+    // FIQ routes to EL2 for the reload re-park IPI — IRQ stays with the payload).
     movz    x12, #0x8000, lsl #16      // HCR_EL2.RW = 1: EL1 is AArch64
+    orr     x12, x12, #0x8             // HCR_EL2.FMO = 1: physical FIQ -> EL2
     msr     hcr_el2, x12
     adrp    x12, el2_vectors           // resident EL2 vectors (HVC service)
     add     x12, x12, :lo12:el2_vectors
