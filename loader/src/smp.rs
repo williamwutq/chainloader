@@ -28,11 +28,14 @@ pub static SMP_MAILBOX: [AtomicU64; 4] = [
     AtomicU64::new(0),
 ];
 
-/// The `x0`–`x4` handoff core 0 publishes so a released secondary reconstructs the
-/// identical register block without the payload having to stage it in RAM.
-/// Order: `load_addr`, `image_len`, `load_addr_min`, `load_addr_max`, `dtb`.
+/// The `x0`–`x6` handoff core 0 publishes so a released secondary reconstructs the
+/// identical register block without the payload having to stage it in RAM. Order:
+/// `load_addr`, `image_len`, `load_addr_min`, `load_addr_max`, `dtb`, `dtb_size`,
+/// `abi_version`.
 #[unsafe(no_mangle)]
-pub static SMP_HANDOFF: [AtomicU64; 5] = [
+pub static SMP_HANDOFF: [AtomicU64; 7] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
@@ -66,7 +69,16 @@ pub fn mailbox_base() -> u64 {
 /// Must run on core 0 with the MMU off. Writes the firmware spin-table words and
 /// signals the secondaries; the loader must stay resident afterwards (it does —
 /// the payload window never overlaps it), since the parked cores execute from it.
-pub unsafe fn release(load_addr: u64, image_len: u64, win_min: u64, win_max: u64, dtb: u64) {
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn release(
+    load_addr: u64,
+    image_len: u64,
+    win_min: u64,
+    win_max: u64,
+    dtb: u64,
+    dtb_size: u64,
+    abi_version: u64,
+) {
     // Publish the handoff before the cores can read it. They only read it once
     // started (well after this returns), but store it first regardless.
     SMP_HANDOFF[0].store(load_addr, Ordering::Relaxed);
@@ -74,6 +86,8 @@ pub unsafe fn release(load_addr: u64, image_len: u64, win_min: u64, win_max: u64
     SMP_HANDOFF[2].store(win_min, Ordering::Relaxed);
     SMP_HANDOFF[3].store(win_max, Ordering::Relaxed);
     SMP_HANDOFF[4].store(dtb, Ordering::Relaxed);
+    SMP_HANDOFF[5].store(dtb_size, Ordering::Relaxed);
+    SMP_HANDOFF[6].store(abi_version, Ordering::Relaxed);
     // Slots start zero (static init); keep them zero so cores wait to be started.
     for slot in &SMP_MAILBOX {
         slot.store(0, Ordering::Relaxed);
@@ -125,12 +139,13 @@ secondary_trampoline:
     dsb     sy
     isb
 
-    // Rebuild the x0-x4 contract from core 0's published handoff.
+    // Rebuild the x0-x6 contract from core 0's published handoff.
     adrp    x11, SMP_HANDOFF
     add     x11, x11, :lo12:SMP_HANDOFF
     ldp     x0, x1, [x11]              // load_addr, image_len
     ldp     x2, x3, [x11, #16]         // load_addr_min, load_addr_max
-    ldr     x4, [x11, #32]             // dtb
+    ldp     x4, x5, [x11, #32]         // dtb, dtb_size
+    ldr     x6, [x11, #48]             // abi_version
     adrp    x7, SMP_MAILBOX
     add     x7, x7, :lo12:SMP_MAILBOX  // x7 = release mailbox base
 
@@ -149,9 +164,7 @@ secondary_trampoline:
     msr     spsr_el2, x12
     msr     elr_el2, x10               // return to the payload entry at EL1
 
-    // Scrub every GPR not carrying the contract (x0-x4, x7, x8 stay).
-    mov     x5, xzr
-    mov     x6, xzr
+    // Scrub every GPR not carrying the contract (x0-x8 stay).
     mov     x9, xzr
     mov     x10, xzr
     mov     x11, xzr

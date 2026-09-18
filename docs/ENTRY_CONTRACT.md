@@ -27,33 +27,37 @@ guaranteed.
 
 ## Register handoff
 
-| Reg        | Value at entry                                         |
-|------------|--------------------------------------------------------|
-| `x0`       | `load_addr` — physical base of the loaded image        |
-| `x1`       | `image_len` — image length in bytes                    |
-| `x2`       | `load_addr_min` — writable window low bound            |
-| `x3`       | `load_addr_max` — writable window high bound           |
-| `x4`       | `dtb` — firmware device-tree-blob pointer, `0` if none |
-| `x5`–`x6`  | `0` — reserved (`dtb_size`/`abi_version`, not yet set) |
-| `x7`       | `smp_release` — base of the secondary release mailbox  |
-| `x8`       | `core_id` — `0` on the boot core                       |
-| `x9`–`x30` | `0` — scrubbed for a clean handoff                     |
-| `v0`–`v31` | `0` — SIMD/FP register file scrubbed                   |
+| Reg        | Value at entry                                        |
+|------------|-------------------------------------------------------|
+| `x0`       | `load_addr` — physical base of the loaded image       |
+| `x1`       | `image_len` — image length in bytes                   |
+| `x2`       | `load_addr_min` — writable window low bound           |
+| `x3`       | `load_addr_max` — writable window high bound          |
+| `x4`       | `dtb` — device-tree pointer, `0` if none or invalid   |
+| `x5`       | `dtb_size` — verified FDT `totalsize`, `0` if no tree |
+| `x6`       | `abi_version` — entry-ABI generation (currently `1`)  |
+| `x7`       | `smp_release` — base of the secondary release mailbox |
+| `x8`       | `core_id` — `0` on the boot core                      |
+| `x9`–`x30` | `0` — scrubbed for a clean handoff                    |
+| `v0`–`v31` | `0` — SIMD/FP register file scrubbed                  |
 
 `x2`/`x3` are the same writable window the loader advertised in `READY`
 (`WINDOW_MIN`/`WINDOW_MAX`): a half-open `[x2, x3)` of physical RAM the payload
 can use freely. It sits entirely above the loader, so staying within it also
 keeps clear of `[__loader_start, __loader_end)`.
 
-`x4` is the device-tree-blob pointer the firmware handed the loader (in `x0` at
-its own entry), forwarded verbatim. It is `0` when the firmware loaded no device
-tree, so a payload that uses it must handle the null case. A payload that ignores
-`x0`–`x4` (e.g. one linked to a fixed load address) is also valid.
+`x4`/`x5` describe the device tree. `x4` is the pointer the firmware handed the
+loader (in `x0` at its own entry); the loader verifies it — checks the FDT magic
+and reads the header `totalsize` into `x5` — and if there is no valid tree sets
+**both `x4` and `x5` to `0`**, so a non-zero `x4` always bounds a real tree at
+`[x4, x4 + x5)`. That region may lie inside the writable window, so a payload that
+needs the DTB should copy it out (or avoid the range) before reusing the memory.
+A payload that ignores the handoff (e.g. one linked to a fixed load address) is
+also valid.
 
-`x7` is the base of the secondary release mailbox and `x8` is the core id (`0`
-here); see [Secondary cores](#secondary-cores-13). `x5`/`x6` are reserved (they
-carry the target ABI's `dtb_size`/`abi_version` in `ENTRY_GOAL.md` but are `0`
-until those land) — a payload must not read meaning into them yet.
+`x6` is the entry-ABI generation (currently `1`), for a payload to check forward
+compatibility. `x7` is the base of the secondary release mailbox and `x8` is the
+core id (`0` here); see [Secondary cores](#secondary-cores-13).
 
 ## Cache/coherency sequence
 
@@ -92,8 +96,8 @@ the final `ERET` the loader configures the EL1 it returns into:
   works immediately. The payload may keep it or set its own.
 - `SPSR_EL2` = EL1h with `DAIF` masked, `ELR_EL2 = load_addr + entry_off`.
 
-`x0`–`x4` carry the handoff (above); every other general-purpose register
-(`x5`–`x30`) and the whole SIMD/FP register file (`v0`–`v31`) are zeroed just
+`x0`–`x8` carry the handoff (above); every other general-purpose register
+(`x9`–`x30`) and the whole SIMD/FP register file (`v0`–`v31`) are zeroed just
 before the `ERET` for a clean, deterministic entry. A payload that wants to run
 at EL2 (e.g. a hypervisor) is not served by this loader.
 

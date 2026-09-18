@@ -43,6 +43,37 @@ const MAX_CHUNK: u16 = (MAX_PAYLOAD - DataFrame::HEADER) as u16;
 /// Loader build version, advertised in `READY`.
 const LOADER_VERSION: u32 = 1;
 
+/// Entry-ABI generation, handed to the payload in `x6` for forward
+/// compatibility (see `../docs/ENTRY_CONTRACT.md`).
+const ABI_VERSION: u64 = 1;
+/// Flattened-device-tree magic, as its logical (big-endian) value.
+const FDT_MAGIC: u32 = 0xd00d_feed;
+/// Upper bound on a plausible device tree, to reject a garbage `totalsize`.
+const DTB_MAX_SIZE: u64 = 2 * 1024 * 1024;
+
+/// Verifies the firmware device tree at `dtb`: checks the FDT magic and reads the
+/// header's `totalsize`. Returns `(dtb, dtb_size)`, both `0` when there is no
+/// valid tree, so the `x4`/`x5` handoff always agrees (a payload can trust that a
+/// non-zero `x4` bounds `[x4, x4 + x5)`).
+fn verify_dtb(dtb: u64) -> (u64, u64) {
+    if dtb == 0 {
+        return (0, 0);
+    }
+    // The 32-bit FDT header fields are stored big-endian and AArch64 is
+    // little-endian, so byte-swap; the header is 8-byte aligned per the spec.
+    // SAFETY: firmware-provided pointer, MMU off (physical read). Reading the
+    // 8-byte header from a non-null, aligned FDT base is sound.
+    let magic = unsafe { read_volatile(dtb as *const u32) }.swap_bytes();
+    if magic != FDT_MAGIC {
+        return (0, 0);
+    }
+    let size = u64::from(unsafe { read_volatile((dtb + 4) as *const u32) }.swap_bytes());
+    if size == 0 || size > DTB_MAX_SIZE {
+        return (0, 0);
+    }
+    (dtb, size)
+}
+
 /// System-timer free-running counter (low 32 bits), ticking at 1 MHz.
 const ST_CLO: usize = 0x3F00_3004;
 /// Idle-heartbeat period, in microseconds (1 s).
@@ -339,8 +370,9 @@ unsafe fn write_image(load_addr: u64, offset: u32, chunk: &[u8]) {
 /// null `VBAR_EL1`, EL1 timer access, `SP_EL1` at the top of the writable
 /// window), releases cores 1–3 into the resident trampoline, and hands over
 /// `x0=load_addr`, `x1=image_len`, `x2=WINDOW_MIN`, `x3=window_max`, `x4=dtb`,
-/// `x7=`release-mailbox base, `x8=0` (core id) at EL1, with every other GPR and
-/// all SIMD/FP (`v0`–`v31`) registers zeroed, per `../docs/ENTRY_CONTRACT.md`.
+/// `x5=dtb_size`, `x6=abi_version`, `x7=`release-mailbox base, `x8=0` (core id)
+/// at EL1, with every other GPR and all SIMD/FP (`v0`–`v31`) registers zeroed,
+/// per `../docs/ENTRY_CONTRACT.md`.
 unsafe fn jump(
     entry: u64,
     load_addr: u64,
@@ -361,10 +393,22 @@ unsafe fn jump(
         // stores are visible to instruction fetch and to the payload's reads,
         // and to any secondary core that later runs the image.
         clean_dcache(load_addr, load_addr + u64::from(mem_len));
+        // Verify the device tree and bound it: x4 = dtb, x5 = dtb_size (both 0 if
+        // there is no valid tree).
+        let (dtb, dtb_size) = verify_dtb(dtb);
         // Release cores 1-3 into the resident trampoline, where they park ready
         // for the payload to start via the mailbox (its base handed off in x7).
-        // Done after the clean above so a started secondary sees coherent bytes.
-        crate::smp::release(load_addr, u64::from(image_len), WINDOW_MIN, window_max, dtb);
+        // Done after the clean above so a started secondary sees coherent bytes;
+        // publishes the full x0-x6 handoff so a secondary rebuilds it verbatim.
+        crate::smp::release(
+            load_addr,
+            u64::from(image_len),
+            WINDOW_MIN,
+            window_max,
+            dtb,
+            dtb_size,
+            ABI_VERSION,
+        );
         let mailbox = crate::smp::mailbox_base();
         // EL1 setup values, precomputed so the `noreturn` asm needs no scratch:
         let hcr_el2: u64 = 1 << 31; // RW = 1: EL1 executes in AArch64
@@ -384,11 +428,10 @@ unsafe fn jump(
             "msr  sp_el1, {stack}",     // stack at the top of the writable window
             "msr  spsr_el2, {spsr}",
             "msr  elr_el2, {entry}",    // return into the image entry at EL1
-            // Clean handoff: x0-x4 carry the contract, x7 the release mailbox,
-            // x8 the core id (0 for the boot core); scrub every other GPR.
-            // (These also overwrite the scratch operands above, now consumed.)
-            "mov  x5, xzr",
-            "mov  x6, xzr",
+            // Clean handoff: x0-x6 carry the contract (x5 dtb_size, x6
+            // abi_version), x7 the release mailbox, x8 the core id (0 for the
+            // boot core); scrub every other GPR. (The scrubbed registers also
+            // overwrite the scratch operands above, now consumed.)
             "mov  x8, xzr",
             "mov  x9, xzr",
             "mov  x10, xzr",
@@ -457,6 +500,8 @@ unsafe fn jump(
             in("x2") WINDOW_MIN,
             in("x3") window_max,
             in("x4") dtb,
+            in("x5") dtb_size,
+            in("x6") ABI_VERSION,
             in("x7") mailbox,
             options(noreturn, nostack),
         )

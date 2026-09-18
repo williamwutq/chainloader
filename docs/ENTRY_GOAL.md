@@ -1,8 +1,8 @@
 # AArch64 entry goal
 
 The **aspirational** entry state — what the loader aims to guarantee once the
-remaining planned work lands (the EL2 reload service; `x5`/`x6` semantics).
-Secondary-core bring-up has landed, so much of this is now real;
+remaining planned work lands (the EL2 reload service). Secondary-core bring-up
+and the `x5`/`x6` handoff have landed, so most of this is now real;
 [`ENTRY_CONTRACT.md`](ENTRY_CONTRACT.md) remains the current, normative contract.
 This file fixes only the target *state* (the tables), so a kernel can be
 pre-planned against the eventual ABI — not how the loader will get there. Rows
@@ -44,8 +44,8 @@ core never has to read shared RAM to learn the layout.
 | `x2`       | `load_addr_min` — writable window low bound                                        |
 | `x3`       | `load_addr_max` — writable window high bound                                       |
 | `x4`       | `dtb` — device-tree pointer (`0` if none or invalid)                               |
-| `x5`       | `dtb_size` — verified FDT total size in bytes (`0` if no valid DTB) †              |
-| `x6`       | `abi_version` — entry-ABI generation, for forward compatibility †                  |
+| `x5`       | `dtb_size` — verified FDT total size in bytes (`0` if no valid DTB)                |
+| `x6`       | `abi_version` — entry-ABI generation, for forward compatibility                    |
 | `x7`       | `smp_release` — base of the secondary release mailbox                              |
 | `x8`       | `core_id` — normalized core index (`0` for the boot core, `1`–`3` for secondaries) |
 | `x9`–`x30` | `0` — scrubbed                                                                     |
