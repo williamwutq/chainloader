@@ -50,6 +50,58 @@ Unix; weigh a tiny dependency against a small `libc`-free `ioctl` wrapper.
   minimal hand-rolled `tcsetattr` via `libc` is enough. Leaning hand-rolled to
   keep the dependency set small, consistent with the rest of the tool.
 
+## `low-power-idle` — host-commanded low-power idle for the waiting loader
+
+**Crate:** `chainloader-protocol` + `chainloader-loader` (plus a `cargo-pi` command).
+**Breaking change:** No — a new frame type; an older loader answers `UnknownType`, an older host never sends it.
+**Depends on:** the shipped protocol codec and the loader receive loop.
+
+### Motivation
+
+A loader left waiting for a host holds the ACT LED steady-on and emits a 1 s
+heartbeat forever — fine on a bench, wasteful for a board left powered between
+loads: LED current, constant UART traffic, and a core spinning the poll loop at
+full tilt. A host that knows it will not load for a while should be able to tell
+the loader to idle quietly, and to bring it back when it is ready to work again.
+
+### Design
+
+Add one host→Pi frame, `MODE` (type `0x08`), payload `mode: u8` (`0` = ready /
+normal, `1` = low-power; other values rejected). The loader tracks a runtime idle
+mode, default normal, reset to normal on every boot and `HVC #0` reload (a fresh
+wait). Each change is confirmed on the wire: `MODE 0` re-sends `READY`; `MODE 1`
+sends a new Pi→host `IDLE` frame (type `0x09`, payload `heartbeat_secs: u16`)
+reporting the reduced beat, so the host does not read the coming silence as a
+disconnect.
+
+In low-power:
+
+- **LED:** off, with a 500 ms liveness flash every 30 s instead of steady-on.
+- **Heartbeat:** the `up, waiting` line drops from every 1 s to every ~120 s.
+- **CPU:** enable the PL011 RX interrupt (`UARTIMSC.RXIM`) and a free system-timer
+  compare for the next blink/heartbeat deadline, both asserted at the BCM
+  interrupt controller, then `WFI` between events so the core halts until a byte
+  arrives or the timer fires. `WFI` wakes on a pending interrupt regardless of the
+  `DAIF` mask, so no EL2 IRQ handler is needed: on wake the loop clears the source
+  (read the UART, re-arm the compare) and polls the decoder as today.
+
+A new `HELLO` (a host starting a load) implicitly returns to normal
+responsiveness, so a load never has to be preceded by a wake command; `MODE 0`
+is the explicit resume for a host that wants the LED and heartbeat back without
+loading. `MODE` is only meaningful while idle — one arriving mid-transfer is
+rejected with `Unexpected`. `cargo pi` grows `sleep` / `wake` subcommands that
+send the frame. No `PROTOCOL_VERSION` bump: the project is unpublished and both
+new type bytes are additive.
+
+### Open questions
+
+- **Wake-timer wiring.** Which free system-timer compare drives the periodic wake
+  (C0/C2 belong to the GPU; C1/C3 are free), and confirming that a PL011 RX
+  interrupt enabled only at the controller — never unmasked into an EL handler —
+  reliably wakes `WFI` on this silicon. If the interrupt path proves fiddly, a
+  first cut keeps polling and just slows the LED and heartbeat, banking the LED
+  and UART-traffic win without the core-halt.
+
 ## `hardening` — malformed-input and repeat-load test suite
 
 **Crate:** workspace.
