@@ -110,10 +110,11 @@ it returns `ERROR(Unexpected)`, and an unrecognized value returns
 `READY`; on `mode = 1` it replies `IDLE`. Any `HELLO` also returns the loader to
 normal, so a load never needs a preceding wake.
 
-In low-power the loader drops the ACT LED (off, with a 500 ms flash every 30 s),
-slows its heartbeat to every ~120 s, and `WFI`-halts the boot core between events
-(waking on an incoming byte or a timer deadline). The mode resets to normal on
-every boot and `HVC #0` reload.
+In low-power the loader drops the ACT LED (off, with a 500 ms flash every 30 s)
+and slows its heartbeat to every ~120 s, while still polling so a command is
+answered at once. The mode resets to normal on every boot and `HVC #0` reload.
+(A `WFI` core-halt for genuine power reduction is deferred until the loader brings
+up an interrupt controller — see `PLANNED.md`.)
 
 ### IDLE (Pi → host) — 2 bytes
 
