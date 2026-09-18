@@ -5,12 +5,14 @@ whole pipeline works end to end on real hardware.
 
 Built for `aarch64-unknown-none` and linked at `0x200000`. On entry it relies on
 the state the loader guarantees ([`../docs/ENTRY_CONTRACT.md`](../docs/ENTRY_CONTRACT.md))
-— a live UART, a stack, EL1 with FP/SIMD enabled, and the `x0`–`x4` register
+— a live UART, a stack, EL1 with FP/SIMD enabled, and the `x0`–`x8` register
 handoff — to print what it received and park:
 
 - the exception level (expects **EL1**);
 - `x0`–`x4`: `load_addr`, `image_len`, the writable window `[min, max)`, and the
   DTB pointer;
+- `x7`/`x8`: the secondary release-mailbox base and the core id (`0` on the boot
+  core);
 - an FP multiply — which **faults if NEON were still trapped**, so a clean line
   proves FP/SIMD is enabled;
 - a `.bss` read-back (`bss[1024] nz = 0`) — the array lives in `.bss`, so it is
@@ -19,9 +21,14 @@ handoff — to print what it received and park:
   without a power cycle** proves the loader *re-zeroed* it rather than merely
   finding fresh zeros.
 
-A successful run prints a `[payload-example] running` banner over the serial
-console — the end-to-end signal that build → flatten → transfer → validate →
-jump all worked.
+Then, as an SMP smoke test, the boot core starts **core 1** through the release
+mailbox (`x7 + 8`, then `SEV`); core 1 re-enters this same image at EL1 with its
+own `x8 = 1` and prints a `[core 1] up …` line — proving the loader parked the
+secondaries and hands them off under the same contract.
+
+A successful run prints a `[payload-example] running` banner (and a `[core 1] up`
+line) over the serial console — the end-to-end signal that build → flatten →
+transfer → validate → jump, and secondary bring-up, all worked.
 
 ## Build and load
 

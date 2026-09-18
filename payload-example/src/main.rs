@@ -3,14 +3,19 @@
 //! Built for `aarch64-unknown-none` and linked at `0x200000`, this is the image
 //! `cargo pi load` transfers and the loader jumps to. It exercises the entry
 //! contract (`../docs/ENTRY_CONTRACT.md`): the loader hands it a live UART, a
-//! stack, EL1 with FP/SIMD enabled, and the `x0`–`x4` register handoff. It
+//! stack, EL1 with FP/SIMD enabled, and the `x0`–`x8` register handoff. It
 //! prints those and parks — a quick end-to-end check that the whole pipeline
 //! (build → flatten → transfer → validate → jump) works on real hardware.
+//!
+//! It also smoke-tests secondary-core bring-up: the boot core starts core 1 via
+//! the release mailbox (`x7`), and the secondary re-enters this same image at
+//! EL1 with `x8 = 1` and reports in — proving the loader parked and hands off the
+//! secondaries under the same contract.
 
 #![no_std]
 #![no_main]
 
-use core::arch::asm;
+use core::arch::{asm, global_asm};
 use core::fmt::Write;
 use core::panic::PanicInfo;
 use core::ptr::{read_volatile, write_volatile};
@@ -22,7 +27,7 @@ const FR_TXFF: u32 = 1 << 5; // transmit FIFO full
 
 /// A small buffer that lands in `.bss`: zero-initialized, so it is *not* part of
 /// the transferred image (only its `memsz` is). It reads as zero at entry only
-/// if the loader zero-filled the image's BSS tail — see the check in `_start`.
+/// if the loader zero-filled the image's BSS tail — see the check in `main`.
 const SCRATCH_LEN: usize = 1024;
 static mut SCRATCH: [u8; SCRATCH_LEN] = [0; SCRATCH_LEN];
 
@@ -54,15 +59,43 @@ impl Write for Uart {
     }
 }
 
-/// Payload entry. The loader `ERET`s here at EL1 with the register handoff in
-/// `x0`–`x4`, which map to these `extern "C"` parameters, and `SP` already set.
+// Entry shim. The loader `ERET`s here at EL1 with the handoff in `x0`–`x8`. The
+// C ABI only carries `x0`–`x7` as arguments, so move `x7` (release mailbox) and
+// `x8` (core id) into `x5`/`x6` and tail-call `main` with them as the 6th/7th
+// args. Secondaries also drop `SP` by `core_id * 64 KiB` so each runs on its own
+// stack instead of colliding with core 0 at the window top.
+global_asm!(
+    r#"
+.section .text.boot
+.global _start
+_start:
+    mov     x5, x7                 // 6th arg: release mailbox base
+    mov     x6, x8                 // 7th arg: core id
+    cbz     x8, 1f                 // boot core keeps SP at the window top
+    mov     x9, sp
+    sub     x9, x9, x8, lsl #16    // secondary N: SP -= N * 64 KiB (own stack)
+    mov     sp, x9
+1:  b       main
+"#
+);
+
+unsafe extern "C" {
+    /// This image's entry address (the `_start` shim), written to a core's
+    /// mailbox slot to release it into the same image.
+    static _start: u8;
+}
+
+/// Payload body, reached from the `_start` shim with the register handoff as
+/// arguments (`x7`→`mailbox`, `x8`→`core_id`). Runs on every core that enters.
 #[unsafe(no_mangle)]
-pub extern "C" fn _start(
+pub extern "C" fn main(
     load_addr: u64,
     image_len: u64,
     win_min: u64,
     win_max: u64,
     dtb: u64,
+    mailbox: u64,
+    core_id: u64,
 ) -> ! {
     let mut uart = Uart;
 
@@ -70,6 +103,16 @@ pub extern "C" fn _start(
     let current_el: u64;
     // SAFETY: reads a system register.
     unsafe { asm!("mrs {}, CurrentEL", out(reg) current_el) };
+
+    if core_id != 0 {
+        // A secondary the boot core released via the mailbox.
+        let _ = writeln!(
+            uart,
+            "[core {core_id}] up at EL{}, sp own, mailbox {mailbox:#x}",
+            current_el >> 2
+        );
+        park();
+    }
 
     // FP/SIMD smoke test: if the trap were still set this faults. `black_box`
     // stops the multiply being const-folded, so a real `fmul` runs. Printed as
@@ -85,6 +128,8 @@ pub extern "C" fn _start(
     let _ = writeln!(uart, "  x2 win_min   = {win_min:#x}");
     let _ = writeln!(uart, "  x3 win_max   = {win_max:#x}");
     let _ = writeln!(uart, "  x4 dtb       = {dtb:#x}");
+    let _ = writeln!(uart, "  x7 mailbox   = {mailbox:#x}");
+    let _ = writeln!(uart, "  x8 core_id   = {core_id}");
     let _ = writeln!(uart, "  fp 2.0*3.0   = {fp}");
 
     // BSS zeroing check. `SCRATCH` is in .bss, so it is never transferred; it is
@@ -108,8 +153,29 @@ pub extern "C" fn _start(
         unsafe { write_volatile(bss.add(i), 0xAA) };
     }
 
-    let _ = writeln!(uart, "[payload-example] done; parking.");
+    let _ = writeln!(uart, "[payload-example] core 0 done.");
 
+    // SMP smoke test, as the last thing core 0 does so its own output is out
+    // first: release core 1 by writing this image's entry to its mailbox slot
+    // (`x7 + 1*8`) and signalling an event. Core 1 re-enters `_start` with the
+    // loader's handoff (its own `x8 = 1`) and reports in above.
+    if mailbox != 0 {
+        let _ = writeln!(uart, "[payload-example] starting core 1...");
+        let slot1 = (mailbox + 8) as *mut u64;
+        let entry = (&raw const _start) as u64;
+        // SAFETY: `slot1` is core 1's release word in the loader-owned mailbox;
+        // MMU off, so the store is non-cacheable and visible to the parked core.
+        unsafe {
+            write_volatile(slot1, entry);
+            asm!("dsb sy", "sev");
+        }
+    }
+
+    park();
+}
+
+/// Idle the core forever.
+fn park() -> ! {
     loop {
         // SAFETY: wait-for-event to idle the core.
         unsafe { asm!("wfe") };
