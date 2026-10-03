@@ -32,12 +32,14 @@ pub static SMP_MAILBOX: [AtomicU64; 4] = [
     AtomicU64::new(0),
 ];
 
-/// The `x0`–`x6` plus `x9` handoff core 0 publishes so a released secondary
+/// The `x0`–`x6` plus `x9`/`x10` handoff core 0 publishes so a released secondary
 /// reconstructs the identical register block without the payload having to stage
 /// it in RAM. Order: `load_addr`, `image_len`, `load_addr_min`, `load_addr_max`,
-/// `dtb`, `dtb_size`, `abi_version`, `core_freq_hz` (slot 7 → `x9`).
+/// `dtb`, `dtb_size`, `abi_version`, `core_freq_hz` (slot 7 → `x9`),
+/// `peripheral_base` (slot 8 → `x10`).
 #[unsafe(no_mangle)]
-pub static SMP_HANDOFF: [AtomicU64; 8] = [
+pub static SMP_HANDOFF: [AtomicU64; 9] = [
+    AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
@@ -100,6 +102,7 @@ pub unsafe fn release(
     dtb_size: u64,
     abi_version: u64,
     core_freq: u64,
+    peripheral_base: u64,
 ) {
     // Publish the handoff before the cores can read it. They only read it once
     // started (well after this returns), but store it first regardless.
@@ -111,6 +114,7 @@ pub unsafe fn release(
     SMP_HANDOFF[5].store(dtb_size, Ordering::Relaxed);
     SMP_HANDOFF[6].store(abi_version, Ordering::Relaxed);
     SMP_HANDOFF[7].store(core_freq, Ordering::Relaxed);
+    SMP_HANDOFF[8].store(peripheral_base, Ordering::Relaxed);
     // Slots start zero (static init); keep them zero so cores wait to be started.
     for slot in &SMP_MAILBOX {
         slot.store(0, Ordering::Relaxed);
@@ -158,8 +162,8 @@ pub unsafe fn quiesce_secondaries() {
 
 // The secondary trampoline. Entered at EL2 by a core the firmware releases from
 // its spin-table. Enables FP/SIMD, parks in a WFE loop on the core's mailbox
-// slot, and on release rebuilds the x0-x6 / x9 handoff, adds x7 (mailbox) / x8
-// (core_id), drops EL2->EL1, and ERETs to the payload — mirroring core 0's jump.
+// slot, and on release rebuilds the x0-x6 / x9 / x10 handoff, adds x7 (mailbox) /
+// x8 (core_id), drops EL2->EL1, and ERETs to the payload — mirroring core 0's jump.
 global_asm!(
     r#"
 .section .text
@@ -220,7 +224,9 @@ secondary_trampoline:
     ldr     w12, [x11]
     str     w12, [x11]                 // write-1-to-clear whatever is pending
 
-    // Rebuild the x0-x6 / x9 contract from core 0's published handoff.
+    // Rebuild the x0-x6 / x9 / x10 contract from core 0's published handoff. x10
+    // still holds the entry address here (consumed into ELR below), so the
+    // peripheral base is loaded into x10 only after that, in the scrub section.
     adrp    x11, SMP_HANDOFF
     add     x11, x11, :lo12:SMP_HANDOFF
     ldp     x0, x1, [x11]              // load_addr, image_len
@@ -251,8 +257,10 @@ secondary_trampoline:
     msr     spsr_el2, x12
     msr     elr_el2, x10               // return to the payload entry at EL1
 
-    // Scrub every GPR not carrying the contract (x0-x9 stay; x9 = core_freq).
-    mov     x10, xzr
+    // ELR now holds the entry, so x10 is free: load the peripheral base into it
+    // (x11 still points at SMP_HANDOFF). Then scrub the rest — x0-x10 carry the
+    // contract (x9 = core_freq, x10 = peripheral_base).
+    ldr     x10, [x11, #64]            // peripheral_base -> x10
     mov     x11, xzr
     mov     x12, xzr
     mov     x13, xzr

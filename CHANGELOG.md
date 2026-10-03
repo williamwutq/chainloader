@@ -20,8 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Entry ABI generation 2 (`x6`): the register handoff now carries the pinned ARM
-  core frequency in `x9`; scrubbed GPRs are `x10`–`x30` (was `x9`–`x30`). A
-  payload built against generation 1 must not read `x9`.
+  core frequency in `x9` and the board's peripheral (MMIO) base in `x10` (so a
+  payload can locate the UART/GPIO/mailbox/timer without hardcoding it); scrubbed
+  GPRs are `x11`–`x30` (was `x9`–`x30`). A payload built against generation 1 must
+  not read `x9`/`x10`.
 
 ### Deprecated
 

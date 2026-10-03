@@ -46,8 +46,13 @@ const LOADER_VERSION: u32 = 1;
 
 /// Entry-ABI generation, handed to the payload in `x6` for forward
 /// compatibility (see `../docs/ENTRY_CONTRACT.md`). Generation 2 adds the pinned
-/// ARM core frequency in `x9`.
+/// ARM core frequency in `x9` and the peripheral (MMIO) base in `x10`.
 const ABI_VERSION: u64 = 2;
+/// Peripheral (MMIO) base for this board, handed to the payload in `x10` so it
+/// can locate the UART / GPIO / mailbox / system timer without hardcoding the
+/// base. Constant for the BCM2836/7 family (Pi 2 / 3 / Zero 2 W) today;
+/// `board-detect` (see `../PLANNED.md`) will make it a detected value.
+const PERIPHERAL_BASE: u64 = 0x3F00_0000;
 /// Flattened-device-tree magic, as its logical (big-endian) value.
 const FDT_MAGIC: u32 = 0xd00d_feed;
 /// Upper bound on a plausible device tree, to reject a garbage `totalsize`.
@@ -463,8 +468,9 @@ unsafe fn write_image(load_addr: u64, offset: u32, chunk: &[u8]) {
 /// window), releases cores 1–3 into the resident trampoline, and hands over
 /// `x0=load_addr`, `x1=image_len`, `x2=WINDOW_MIN`, `x3=window_max`, `x4=dtb`,
 /// `x5=dtb_size`, `x6=abi_version`, `x7=`release-mailbox base, `x8=0` (core id),
-/// `x9=`pinned ARM core frequency at EL1, with every other GPR and all SIMD/FP
-/// (`v0`–`v31`) registers zeroed, per `../docs/ENTRY_CONTRACT.md`.
+/// `x9=`pinned ARM core frequency, `x10=`peripheral base at EL1, with every other
+/// GPR and all SIMD/FP (`v0`–`v31`) registers zeroed, per
+/// `../docs/ENTRY_CONTRACT.md`.
 unsafe fn jump(
     entry: u64,
     load_addr: u64,
@@ -488,12 +494,12 @@ unsafe fn jump(
         // Verify the device tree and bound it: x4 = dtb, x5 = dtb_size (both 0 if
         // there is no valid tree).
         let (dtb, dtb_size) = verify_dtb(dtb);
-        // The pinned ARM core frequency, handed to the payload in x9 (ABI gen 2).
+        // The pinned ARM core frequency (x9) and peripheral base (x10), ABI gen 2.
         let core_freq = u64::from(crate::clocks::core_freq_hz());
         // Release cores 1-3 into the resident trampoline, where they park ready
         // for the payload to start via the mailbox (its base handed off in x7).
         // Done after the clean above so a started secondary sees coherent bytes;
-        // publishes the full x0-x6/x9 handoff so a secondary rebuilds it verbatim.
+        // publishes the full x0-x6/x9/x10 handoff so a secondary rebuilds it verbatim.
         crate::smp::release(
             load_addr,
             u64::from(image_len),
@@ -503,6 +509,7 @@ unsafe fn jump(
             dtb_size,
             ABI_VERSION,
             core_freq,
+            PERIPHERAL_BASE,
         );
         let mailbox = crate::smp::mailbox_base();
         // Resident EL2 vector table, so the payload can `HVC` back in to reload.
@@ -534,11 +541,10 @@ unsafe fn jump(
             "msr  elr_el2, {entry}",    // return into the image entry at EL1
             // Clean handoff: x0-x6 carry the contract (x5 dtb_size, x6
             // abi_version), x7 the release mailbox, x8 the core id (0 for the
-            // boot core), x9 the pinned ARM core frequency; scrub every other GPR.
-            // (The scrubbed registers also overwrite the scratch operands above,
-            // now consumed.)
+            // boot core), x9 the pinned ARM core frequency, x10 the peripheral
+            // base; scrub every other GPR. (The scrubbed registers also overwrite
+            // the scratch operands above, now consumed.)
             "mov  x8, xzr",
-            "mov  x10, xzr",
             "mov  x11, xzr",
             "mov  x12, xzr",
             "mov  x13, xzr",
@@ -609,6 +615,7 @@ unsafe fn jump(
             in("x6") ABI_VERSION,
             in("x7") mailbox,
             in("x9") core_freq,
+            in("x10") PERIPHERAL_BASE,
             options(noreturn, nostack),
         )
     }

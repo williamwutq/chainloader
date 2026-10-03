@@ -47,7 +47,8 @@ core never has to read shared RAM to learn the layout.
 | `x7`       | `smp_release` — base of the secondary release mailbox                              |
 | `x8`       | `core_id` — normalized core index (`0` for the boot core, `1`–`3` for secondaries) |
 | `x9`       | `core_freq_hz` — pinned ARM core frequency in Hz (ABI gen 2; see Clocks)           |
-| `x10`–`x30`| `0` — scrubbed                                                                     |
+| `x10`      | `periph_base` — peripheral (MMIO) base for this board (ABI gen 2; see Peripherals) |
+| `x11`–`x30`| `0` — scrubbed                                                                     |
 | `v0`–`v31` | `0` — scrubbed                                                                     |
 
 `x4`/`x5` bound the device tree as `[dtb, dtb + dtb_size)`: the loader checks the
@@ -85,8 +86,22 @@ cycle count. `x9` is re-pinned and re-reported on every `HVC #0` reload, so a
 payload that changed the core clock does not leave a stale value for its
 successor.
 
-`x9` is present from ABI generation 2 (`x6`). A payload built against generation
-1 must not read it.
+## Peripherals at entry (every core)
+
+The loader hands the board's **peripheral (MMIO) base** to the payload in `x10`
+(`periph_base`), so a payload can locate the PL011 UART, the GPIO block, the
+VideoCore mailbox, and the system timer without hardcoding an address. The
+peripheral registers sit at fixed offsets from this base across the supported
+family — for example the mailbox at `periph_base + 0xB880` and the 1 MHz system
+timer at `periph_base + 0x3004` — so `x10` plus those offsets is enough to drive
+them on any board the loader supports. On the BCM2836/7 family (Pi 2 / 3 /
+Zero 2 W) this is `0x3F00_0000` today; it becomes a detected value under the
+planned `board-detect` work, at which point a payload that reads `x10` needs no
+change. The ARM-local peripherals (per-core timers, mailboxes) live at their own
+fixed `0x4000_0000` base and are not derived from `x10`.
+
+Both `x9` and `x10` are present from ABI generation 2 (`x6`). A payload built
+against generation 1 must not read them.
 
 ## Secondary release mailbox
 
