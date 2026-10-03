@@ -25,6 +25,11 @@ const CHANNEL_PROP: u32 = 8;
 const REQUEST_CODE: u32 = 0x0000_0000;
 const RESPONSE_SUCCESS: u32 = 0x8000_0000;
 const TAG_GET_ARM_MEMORY: u32 = 0x0001_0005;
+const TAG_GET_CLOCK_RATE: u32 = 0x0003_0002;
+const TAG_SET_CLOCK_RATE: u32 = 0x0003_8002;
+
+/// VideoCore clock id for the ARM core clock (the frequency the A53 runs at).
+pub const CLOCK_ID_ARM: u32 = 0x3;
 
 /// A 16-byte-aligned property-message buffer. The mailbox requires the message
 /// address to be 16-aligned (its low nibble carries the channel number).
@@ -102,4 +107,67 @@ pub unsafe fn arm_memory() -> Option<(u64, u64)> {
     let base = unsafe { read_volatile(&raw const msg.words[5]) };
     let size = unsafe { read_volatile(&raw const msg.words[6]) };
     Some((u64::from(base), u64::from(size)))
+}
+
+/// Current rate of `clock_id` in Hz, or `None` on a failed exchange or a zero
+/// rate (the VideoCore reports `0` for an unknown clock id). The value buffer is
+/// `[clock_id (in), rate (out)]`.
+///
+/// # Safety
+///
+/// Performs raw MMIO to the mailbox registers. Run on the boot core with the MMU
+/// off, so ARM accesses bypass the caches and stay coherent with VideoCore.
+pub unsafe fn get_clock_rate(clock_id: u32) -> Option<u32> {
+    let mut msg = Message {
+        words: [
+            8 * 4,              // total size in bytes (8 words used)
+            REQUEST_CODE,       // request
+            TAG_GET_CLOCK_RATE, // tag
+            8,                  // value buffer size (clock_id + rate)
+            0,                  // tag request code
+            clock_id,           // in: clock id
+            0,                  // out: rate
+            0,                  // end tag
+            0,                  // unused
+        ],
+    };
+    // SAFETY: boot core, MMU off; a single synchronous mailbox exchange.
+    if !unsafe { exchange(&mut msg) } {
+        return None;
+    }
+    // SAFETY: on success the VideoCore wrote the rate into words[6].
+    let rate = unsafe { read_volatile(&raw const msg.words[6]) };
+    (rate != 0).then_some(rate)
+}
+
+/// Sets `clock_id` to `rate` Hz (with the matching turbo/voltage change, so a
+/// raised clock actually holds), returning the rate the VideoCore reports it
+/// applied, or `None` on a failed exchange. The value buffer is `[clock_id,
+/// rate, skip_setting_turbo]`; `skip_setting_turbo = 0` lets the firmware raise
+/// the voltage with the clock.
+///
+/// # Safety
+///
+/// Performs raw MMIO to the mailbox registers. Run on the boot core with the MMU
+/// off, so ARM accesses bypass the caches and stay coherent with VideoCore.
+pub unsafe fn set_clock_rate(clock_id: u32, rate: u32) -> Option<u32> {
+    let mut msg = Message {
+        words: [
+            9 * 4,              // total size in bytes (9 words used)
+            REQUEST_CODE,       // request
+            TAG_SET_CLOCK_RATE, // tag
+            12,                 // value buffer size (clock_id + rate + skip_turbo)
+            0,                  // tag request code
+            clock_id,           // in: clock id
+            rate,               // in: requested rate; out: applied rate
+            0,                  // skip_setting_turbo = 0 (raise voltage with clock)
+            0,                  // end tag
+        ],
+    };
+    // SAFETY: boot core, MMU off; a single synchronous mailbox exchange.
+    if !unsafe { exchange(&mut msg) } {
+        return None;
+    }
+    // SAFETY: on success the VideoCore wrote the applied rate into words[6].
+    Some(unsafe { read_volatile(&raw const msg.words[6]) })
 }

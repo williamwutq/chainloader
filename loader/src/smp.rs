@@ -32,12 +32,13 @@ pub static SMP_MAILBOX: [AtomicU64; 4] = [
     AtomicU64::new(0),
 ];
 
-/// The `x0`–`x6` handoff core 0 publishes so a released secondary reconstructs the
-/// identical register block without the payload having to stage it in RAM. Order:
-/// `load_addr`, `image_len`, `load_addr_min`, `load_addr_max`, `dtb`, `dtb_size`,
-/// `abi_version`.
+/// The `x0`–`x6` plus `x9` handoff core 0 publishes so a released secondary
+/// reconstructs the identical register block without the payload having to stage
+/// it in RAM. Order: `load_addr`, `image_len`, `load_addr_min`, `load_addr_max`,
+/// `dtb`, `dtb_size`, `abi_version`, `core_freq_hz` (slot 7 → `x9`).
 #[unsafe(no_mangle)]
-pub static SMP_HANDOFF: [AtomicU64; 7] = [
+pub static SMP_HANDOFF: [AtomicU64; 8] = [
+    AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
@@ -98,6 +99,7 @@ pub unsafe fn release(
     dtb: u64,
     dtb_size: u64,
     abi_version: u64,
+    core_freq: u64,
 ) {
     // Publish the handoff before the cores can read it. They only read it once
     // started (well after this returns), but store it first regardless.
@@ -108,6 +110,7 @@ pub unsafe fn release(
     SMP_HANDOFF[4].store(dtb, Ordering::Relaxed);
     SMP_HANDOFF[5].store(dtb_size, Ordering::Relaxed);
     SMP_HANDOFF[6].store(abi_version, Ordering::Relaxed);
+    SMP_HANDOFF[7].store(core_freq, Ordering::Relaxed);
     // Slots start zero (static init); keep them zero so cores wait to be started.
     for slot in &SMP_MAILBOX {
         slot.store(0, Ordering::Relaxed);
@@ -155,7 +158,7 @@ pub unsafe fn quiesce_secondaries() {
 
 // The secondary trampoline. Entered at EL2 by a core the firmware releases from
 // its spin-table. Enables FP/SIMD, parks in a WFE loop on the core's mailbox
-// slot, and on release rebuilds the x0-x4 handoff, adds x7 (mailbox) / x8
+// slot, and on release rebuilds the x0-x6 / x9 handoff, adds x7 (mailbox) / x8
 // (core_id), drops EL2->EL1, and ERETs to the payload — mirroring core 0's jump.
 global_asm!(
     r#"
@@ -217,13 +220,14 @@ secondary_trampoline:
     ldr     w12, [x11]
     str     w12, [x11]                 // write-1-to-clear whatever is pending
 
-    // Rebuild the x0-x6 contract from core 0's published handoff.
+    // Rebuild the x0-x6 / x9 contract from core 0's published handoff.
     adrp    x11, SMP_HANDOFF
     add     x11, x11, :lo12:SMP_HANDOFF
     ldp     x0, x1, [x11]              // load_addr, image_len
     ldp     x2, x3, [x11, #16]         // load_addr_min, load_addr_max
     ldp     x4, x5, [x11, #32]         // dtb, dtb_size
     ldr     x6, [x11, #48]             // abi_version
+    ldr     x9, [x11, #56]             // core_freq_hz -> x9 (survives the scrub below)
     adrp    x7, SMP_MAILBOX
     add     x7, x7, :lo12:SMP_MAILBOX  // x7 = release mailbox base
 
@@ -247,8 +251,7 @@ secondary_trampoline:
     msr     spsr_el2, x12
     msr     elr_el2, x10               // return to the payload entry at EL1
 
-    // Scrub every GPR not carrying the contract (x0-x8 stay).
-    mov     x9, xzr
+    // Scrub every GPR not carrying the contract (x0-x9 stay; x9 = core_freq).
     mov     x10, xzr
     mov     x11, xzr
     mov     x12, xzr

@@ -14,6 +14,7 @@
 #![no_std]
 #![no_main]
 
+mod clocks;
 mod hvc;
 mod led;
 mod mailbox;
@@ -94,6 +95,12 @@ pub extern "C" fn loader_main(dtb: u64) -> ! {
         chainloader_protocol::PROTOCOL_VERSION,
     );
     let _ = writeln!(uart, "UART up @ 115200 8N1. Waiting for host (HELLO).");
+
+    // Establish the entry-contract clock guarantees: verify the generic-timer
+    // frequency (fatal if it fails) and pin/report the ARM core clock. Must run
+    // on the boot core with the MMU off, as it is here.
+    // SAFETY: boot core at startup, MMU off; sole mailbox/clock user.
+    unsafe { clocks::establish(&mut uart) };
 
     // Record the device tree for a later `HVC #0` reload to replay.
     hvc::set_reload_dtb(dtb);

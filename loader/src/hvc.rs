@@ -64,6 +64,11 @@ extern "C" fn hvc_reload() -> ! {
         uart,
         "\nchainloader: HVC #0 reload; waiting for host (HELLO)."
     );
+    // Re-establish the clock guarantees: the previous payload may have changed
+    // the ARM core clock, so re-pin and refresh the reported rate (and re-verify
+    // the generic timer, which is immutable so always passes).
+    // SAFETY: boot core at EL2, MMU off; secondaries are quiesced.
+    unsafe { crate::clocks::establish(&mut uart) };
     // Two ACT-LED blinks: a reload is visible without a serial console, and
     // distinct from the boot burst (three). Also reclaims the LED from a payload
     // that was driving it (a re-parked secondary no longer touches it). Leaves it
