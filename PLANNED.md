@@ -149,7 +149,100 @@ only add support, never break the working path.
 
 - **Inaccessible LEDs.** Some boards (e.g. Pi 3B) wire the ACT LED to the
   VideoCore GPIO expander rather than an ARM GPIO, so bare-metal can't drive it —
-  detect and skip the blink instead of toggling a wrong pin.
+  detect and skip the blink instead of toggling a wrong pin. (The
+  `hvc-mailbox-services` entry below would make this LED reachable rather than
+  skipped, via the expander's `GET`/`SET_GPIO_STATE` mailbox ops.)
+
+
+## `hvc-mailbox-services` — scalar VideoCore mailbox services over `HVC`
+
+**Crate:** `chainloader-loader` (plus a `payload-example` demo and an
+`ENTRY_CONTRACT.md` note when shipped).
+**Breaking change:** No — additive. `HVC #0` (reload) and the unknown-immediate
+no-op are unchanged; the service lives behind a new immediate.
+**Depends on:** the resident EL2 `HVC` service and the mailbox driver (both
+shipped); complements the `x10` peripheral-base handoff.
+
+### Motivation
+
+A payload now finds the peripheral base in `x10`, so direct MMIO — UART, GPIO,
+the system timer — is board-agnostic without the loader's help. But some
+operations are reachable *only* through the VideoCore mailbox, and the most
+important are not optional: the SD (EMMC) and USB controllers boot **unpowered**,
+so a payload that wants to touch them must `SET_POWER_STATE` (and usually enable a
+clock) over the mailbox first — there is no register poke that substitutes.
+
+A payload can ring the mailbox itself with the `x10` base, but that means
+re-implementing the property protocol and, once it has enabled its own MMU and
+caches, hand-maintaining the 16-byte-aligned, non-cacheable request buffer the
+GPU reads — the coherence footgun the loader sidesteps only because it runs with
+the MMU off. The loader already owns the mailbox at EL2 in exactly that coherent
+state. Forwarding a small set of *scalar* operations therefore gives the payload
+board-agnostic access to the handful of mailbox services that are both essential
+and awkward to DIY, without exposing the open-ended, buffer-shaped remainder of
+the property interface.
+
+### Design
+
+A new `HVC #1` is the mailbox gateway. `HVC #0` (reload) and every other
+immediate (the forward-compatible no-op) are untouched, so the gateway is purely
+additive. The call is **scalar-only** — no pointer crosses the EL1→EL2 boundary,
+so there is no EL1 VA for the MMU-off loader to translate and no caller buffer to
+keep coherent:
+
+- `x0` in: operation selector — a small loader-defined enum, *not* the raw
+  VideoCore tag, so the payload is decoupled from tag numbers and the loader
+  allowlists exactly the safe, scalar ops.
+- `x1` in: the id the op addresses (clock id, power device id, GPIO id), or `0`.
+- `x2` in: the value, for the write ops.
+- `x0` out: status — `0` ok, nonzero for "unknown op" or "mailbox failure".
+- `x1` out: the result (a GET's value; a SET echoes the applied value).
+
+One selector is reserved for **capability discovery**: `QUERY` takes the op code
+to probe in `x2` (with `x1 = 0`) and returns `x1 = 0` if this loader implements
+that op, `1` if not — `0` as the affirmative, matching the `x0` status
+convention. A payload probes for an op before relying on it rather than inferring
+support from an "unknown op" failure, so a payload written against a newer loader
+degrades deliberately on an older one. `QUERY` itself is op `0`, so it is always
+present and `QUERY(QUERY)` is the handshake that the gateway exists at all.
+
+The handler runs on the **boot core only**: it resets `SP_EL2` to the loader
+stack and rings the mailbox against the loader's own buffer. The mailbox is a
+single shared resource, so serializing on the boot core avoids cross-core races
+without an EL2 lock; a call from a secondary returns the "wrong core" status
+rather than racing. The handler is tiny — it rings the mailbox and returns two
+values — and runs on its own EL2 stack, so it touches a small fixed set of
+registers: it consumes `x0`–`x2`, defines `x0`/`x1`, and may use `x3` as free
+scratch, so its clobber set is **`x0`–`x3`**. One declared scratch (`x3`) spares
+the hot path a save/restore pair; anything the mailbox exchange needs beyond that
+is saved and restored on the EL2 stack, leaving `x4`–`x30`, `SP`, and the FP/SIMD
+file untouched. A payload wrapping the call need preserve nothing beyond `x0`–`x3`.
+FIQ is masked on synchronous-exception entry, so the short exchange cannot be
+re-entered by a forwarded reload IPI.
+
+The initial allowlist is the scalar, board-agnostic operations a minimal payload
+actually needs: `GET_BOARD_REVISION`; `GET`/`SET_POWER_STATE`;
+`GET`/`SET_CLOCK_STATE`; `GET`/`SET_CLOCK_RATE`; `GET_THROTTLED`;
+`GET_TEMPERATURE`; and the VideoCore expander `GET`/`SET_GPIO_STATE` (the path to
+the ACT LED on boards that wire it there — the case `board-detect` flags). The
+buffer-shaped families — framebuffer, memory allocation and `EXECUTE_CODE`,
+command line, EDID — are deliberately excluded: a payload that needs them can
+drive the mailbox itself via `x10`, and keeping them out holds the ABI small and
+the loader from drifting into a general firmware-services layer.
+
+### Open questions
+
+- **Writes vs read-only first.** The reads are plainly safe; the writes are not
+  uniformly so. `SET_POWER_STATE`/`SET_CLOCK_STATE` are benign, but
+  `SET_CLOCK_RATE` (and any later `SET_VOLTAGE`) can destabilize or overheat the
+  SoC. Whether the first cut ships rate control at all, or starts
+  read-plus-power-only and adds it once a caller needs it, is open — leaning
+  power + read-only to start.
+- **Any-core access.** Boot-core-only keeps the handler lock-free, but a
+  genuinely SMP payload wanting to power a peripheral from a worker core must
+  bounce the request to core 0 itself. Whether real use justifies an EL2 spinlock
+  (or a forward-to-boot-core path like the reload) is open; start boot-core-only
+  and revisit if it bites.
 
 
 ## `usb-transport` — USB CDC-ACM device transport on the OTG port
