@@ -3,7 +3,7 @@
 //! Built for `aarch64-unknown-none` and linked at `0x200000`, this is the image
 //! `cargo pi load` transfers and the loader jumps to. It exercises the entry
 //! contract (`../docs/ENTRY_CONTRACT.md`): the loader hands it a live UART, a
-//! stack, EL1 with FP/SIMD enabled, and the `x0`–`x9` register handoff. It
+//! stack, EL1 with FP/SIMD enabled, and the `x0`–`x10` register handoff. It
 //! prints those and parks — a quick end-to-end check that the whole pipeline
 //! (build → flatten → transfer → validate → jump) works on real hardware.
 //!
@@ -69,7 +69,7 @@ impl Write for Uart {
     }
 }
 
-/// The full `x0`–`x9` register handoff, captured by the `_start` shim, in the
+/// The full `x0`–`x10` register handoff, captured by the `_start` shim, in the
 /// order it pushes them. `#[repr(C)]` so the field offsets match the stores.
 #[repr(C)]
 pub struct Handoff {
@@ -83,28 +83,30 @@ pub struct Handoff {
     mailbox: u64,
     core_id: u64,
     core_freq: u64,
+    periph_base: u64,
 }
 
-// Entry shim. The loader `ERET`s here at EL1 with the handoff in `x0`–`x9`, more
-// registers than the C ABI carries as arguments, so push all ten to the stack and
-// pass a pointer to that `Handoff`. Secondaries first drop `SP` by
-// `core_id * 64 KiB` so each runs on its own stack rather than colliding with
-// core 0 at the window top — using `x10` as scratch so the `x9` handoff (the
-// pinned core frequency) survives to the push.
+// Entry shim. The loader `ERET`s here at EL1 with the handoff in `x0`–`x10`, more
+// registers than the C ABI carries as arguments, so push all eleven to the stack
+// and pass a pointer to that `Handoff` (96 bytes reserved to keep `SP`
+// 16-aligned). Secondaries first drop `SP` by `core_id * 64 KiB` so each runs on
+// its own stack rather than colliding with core 0 at the window top — using
+// `x11` as scratch so the `x9`/`x10` handoff survives to the push.
 global_asm!(
     r#"
 .section .text.boot
 .global _start
 _start:
     cbz     x8, 1f                 // boot core keeps SP at the window top
-    mov     x10, sp                // scratch: x9 carries core_freq, keep it intact
-    sub     x10, x10, x8, lsl #16  // secondary N: SP -= N * 64 KiB (own stack)
-    mov     sp, x10
-1:  stp     x0, x1, [sp, #-80]!    // push the x0-x9 handoff; sp -> Handoff base
+    mov     x11, sp                // scratch: x9/x10 carry handoff, keep them intact
+    sub     x11, x11, x8, lsl #16  // secondary N: SP -= N * 64 KiB (own stack)
+    mov     sp, x11
+1:  stp     x0, x1, [sp, #-96]!    // push the x0-x10 handoff; sp -> Handoff base
     stp     x2, x3, [sp, #16]
     stp     x4, x5, [sp, #32]
     stp     x6, x7, [sp, #48]
     stp     x8, x9, [sp, #64]      // x8 core_id, x9 core_freq
+    str     x10, [sp, #80]         // x10 periph_base
     mov     x0, sp                 // &Handoff
     b       main
 "#
@@ -180,6 +182,7 @@ pub extern "C" fn main(handoff: *const Handoff) -> ! {
     let _ = writeln!(uart, "  x7 mailbox   = {mailbox:#x}");
     let _ = writeln!(uart, "  x8 core_id   = {}", h.core_id);
     let _ = writeln!(uart, "  x9 core_freq = {} Hz", h.core_freq);
+    let _ = writeln!(uart, "  x10 periph   = {:#x}", h.periph_base);
     let _ = writeln!(uart, "  fp 2.0*3.0   = {fp}");
 
     // BSS zeroing check. `SCRATCH` is in .bss, so it is never transferred; it is
