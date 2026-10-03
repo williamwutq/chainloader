@@ -20,7 +20,7 @@ every core enters the payload in the same state.
 | I-cache         | Invalidated, so instruction fetch sees the loaded image.                            |
 | `DAIF`          | All masked (D, A, I, F).                                                            |
 | FP/SIMD         | Enabled (`CPACR_EL1.FPEN=0b11`); NEON usable.                                       |
-| Timers          | Counters readable at EL1; `CNTVOFF_EL2 = 0`; `CNTFRQ_EL0` as firmware set it        |
+| Timers          | Counters readable at EL1; `CNTVOFF_EL2 = 0`; `CNTFRQ_EL0` validated (see Clocks)    |
 | UART            | PL011 (UART0) up at 115200 8N1 on GPIO14/15 (ALT0); usable without re-init.         |
 | `SP`            | `SP_EL1` = `load_addr_max` (window top)                                             |
 | `PC`            | Core 0: `load_addr + entry_off`. Secondary: the address the payload released it to. |
@@ -46,13 +46,47 @@ core never has to read shared RAM to learn the layout.
 | `x6`       | `abi_version` — entry-ABI generation, for forward compatibility                    |
 | `x7`       | `smp_release` — base of the secondary release mailbox                              |
 | `x8`       | `core_id` — normalized core index (`0` for the boot core, `1`–`3` for secondaries) |
-| `x9`–`x30` | `0` — scrubbed                                                                     |
+| `x9`       | `core_freq_hz` — pinned ARM core frequency in Hz (ABI gen 2; see Clocks)           |
+| `x10`–`x30`| `0` — scrubbed                                                                     |
 | `v0`–`v31` | `0` — scrubbed                                                                     |
 
 `x4`/`x5` bound the device tree as `[dtb, dtb + dtb_size)`: the loader checks the
 FDT magic at `dtb` and reads its `totalsize`, so both are `0` for no valid tree.
 That region may fall inside the writable window, so a payload that needs the DTB
 should copy it out (or avoid the range) before reusing the memory.
+
+## Clocks at entry (every core)
+
+Two clocks matter to a payload, and the loader fixes a definite guarantee for
+each before handoff. Neither tracks the other: the generic timer and the ARM
+core clock are separately sourced, and a third reference — the BCM 1 MHz system
+timer — is what the loader cross-checks against at boot.
+
+**Generic timer — the timebase.** `CNTFRQ_EL0` is **guaranteed valid**: nonzero,
+and within 10% of the frequency implied by counting `CNTVCT_EL0` against the
+independent 1 MHz system timer over a 10 ms window. With `CNTVOFF_EL2 = 0` and
+EL1 counter access granted, a payload reads `CNTFRQ_EL0` for the rate and
+`CNTPCT_EL0`/`CNTVCT_EL0` for the count — this is the correct way to measure
+wall-clock time at EL1. If the check fails (firmware left `CNTFRQ_EL0` zero or
+bogus), the loader **refuses to boot a payload** and halts with a message on the
+UART, rather than hand over a broken timebase.
+
+**ARM core clock — pinned and reported.** The CPU core frequency is not
+self-describing at EL1 (no architected register reports it), so the loader
+requests **1 GHz** (the Zero 2 W's rated maximum) through the VideoCore mailbox —
+the firmware clamps the request to its configured max, so a board or `config.txt`
+with a lower cap is honored and nothing is overclocked — and reports the rate it
+reads back in **`x9`** (`core_freq_hz`). A payload that needs its core clock —
+e.g. to calibrate a cycle-counted busy-loop — takes it from `x9` rather than
+guessing. This is **best-effort**, not a hard guarantee for all time: firmware
+thermal or under-voltage throttling can still lower the core clock after handoff.
+A payload that needs exact timing must therefore use the generic timer, never a
+cycle count. `x9` is re-pinned and re-reported on every `HVC #0` reload, so a
+payload that changed the core clock does not leave a stale value for its
+successor.
+
+`x9` is present from ABI generation 2 (`x6`). A payload built against generation
+1 must not read it.
 
 ## Secondary release mailbox
 
