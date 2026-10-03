@@ -5,7 +5,7 @@ whole pipeline works end to end on real hardware.
 
 Built for `aarch64-unknown-none` and linked at `0x200000`. On entry it relies on
 the state the loader guarantees ([`../docs/ENTRY_CONTRACT.md`](../docs/ENTRY_CONTRACT.md))
-— a live UART, a stack, EL1 with FP/SIMD enabled, and the `x0`–`x8` register
+— a live UART, a stack, EL1 with FP/SIMD enabled, and the `x0`–`x9` register
 handoff — to print what it received and park:
 
 - the exception level (expects **EL1**);
@@ -15,6 +15,8 @@ handoff — to print what it received and park:
   version;
 - `x7`/`x8`: the secondary release-mailbox base and the core id (`0` on the boot
   core);
+- `x9`: the pinned ARM core frequency in Hz (the loader validates `CNTFRQ_EL0` and
+  pins/reports the core clock — see the entry contract's *Clocks at entry*);
 - an FP multiply — which **faults if NEON were still trapped**, so a clean line
   proves FP/SIMD is enabled;
 - a `.bss` read-back (`bss[1024] nz = 0`) — the array lives in `.bss`, so it is
