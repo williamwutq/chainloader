@@ -28,9 +28,13 @@ pub(crate) struct Image {
     pub crc32: u32,
 }
 
-/// Builds the payload per `cfg` and returns the flat image.
+/// Builds the payload per `cfg` (or takes `cfg.image` as built) and returns
+/// the flat image.
 pub(crate) fn build(cfg: &Config) -> Result<Image> {
-    let exe = cargo_build(cfg)?;
+    let exe = match &cfg.image {
+        Some(path) => path.clone(),
+        None => cargo_build(cfg)?,
+    };
     let data = std::fs::read(&exe).map_err(|e| format!("reading {}: {e}", exe.display()))?;
 
     let (load_addr, entry_off, mem_len, bytes) = if is_elf(&data) {

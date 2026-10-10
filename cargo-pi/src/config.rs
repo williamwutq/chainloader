@@ -30,6 +30,8 @@ pub(crate) struct Config {
     pub release: bool,
     /// Stay attached as a console after a successful load.
     pub console_after: bool,
+    /// A prebuilt image (ELF or raw) to load instead of running `cargo build`.
+    pub image: Option<std::path::PathBuf>,
 }
 
 impl Default for Config {
@@ -45,6 +47,7 @@ impl Default for Config {
             // far larger, and the documented loop is `cargo build --release`.
             release: true,
             console_after: false,
+            image: None,
         }
     }
 }
@@ -60,6 +63,7 @@ pub(crate) struct CliOverrides {
     pub bin: Option<String>,
     pub release: Option<bool>,
     pub console_after: Option<bool>,
+    pub image: Option<String>,
 }
 
 /// A `load-address` value in `[package.metadata.pi]`, accepted as either a
@@ -160,6 +164,9 @@ impl Config {
         }
         if let Some(c) = cli.console_after {
             cfg.console_after = c;
+        }
+        if let Some(i) = cli.image {
+            cfg.image = Some(i.into());
         }
 
         Ok(cfg)

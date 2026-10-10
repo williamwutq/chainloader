@@ -50,6 +50,7 @@ OPTIONS (load only):
     --bin <NAME>          Binary target to build
     --release / --debug   Build profile (default: release)
     --load-address <ADDR> Load address for a raw (non-ELF) image
+    --image <FILE>        Load this prebuilt image (ELF or raw) instead of building
     --console             Stay attached as a console after loading
     --no-console          Do not attach a console after loading
 
@@ -170,6 +171,7 @@ fn parse_overrides(args: &[String], load_flags: bool) -> Result<CliOverrides> {
                 "--load-address" | "--load-addr" => o.load_addr = Some(parse_u64(&value()?)?),
                 "--console" => o.console_after = Some(true),
                 "--no-console" => o.console_after = Some(false),
+                "--image" => o.image = Some(value()?),
                 other => return Err(format!("unknown option: {other}").into()),
             },
             other => return Err(format!("unknown option: {other}").into()),
