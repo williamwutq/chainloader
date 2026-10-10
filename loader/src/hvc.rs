@@ -169,7 +169,8 @@ el2_return:
 // A core's FIQ, routed to EL2 by HCR_EL2.FMO, lands here. Every core routes FIQ
 // to the loader now. If this core's mailbox 0 is pending (the loader's IPI), clear
 // it: on the BOOT core that IPI is a secondary's reload request, so run the
-// reload; on a SECONDARY it is the reload re-park, so re-enter the trampoline.
+// reload; on a SECONDARY it is the reload re-park, so clean its L1 data cache
+// and re-enter the trampoline.
 // Otherwise return to the caller. Runs at EL2, uses no stack.
 fiq_dispatch:
     mrs     x0, mpidr_el1
@@ -181,7 +182,39 @@ fiq_dispatch:
     cbz     w2, 1f                 // not our IPI: return to the caller
     str     w2, [x1]               // write-1-to-clear, deasserting the FIQ
     cbz     x0, hvc_reload_entry   // boot core: reload request -> perform reload
-    b       secondary_trampoline   // secondary: re-park (does not return here)
+    // Secondary: before re-parking, clean+invalidate this core's own L1 data
+    // cache by set/way (level 1 only; L2 is shared). The payload may have run
+    // this core with its caches on, and set/way maintenance is local to the
+    // core, so the boot core's flush_dcache_all cannot reach these lines: left
+    // here, they would survive the reload, serve stale data to the next
+    // payload through coherency, and could be evicted over the new image.
+    // Cleaned into L2, they reach RAM with the boot core's full flush, which
+    // runs after every secondary has re-parked (quiesce_secondaries).
+    // The set and way fields are stepped down by precomputed increments,
+    // so the inner loop is just orr, dc, subs, b (level 1: no level bits).
+    msr     csselr_el1, xzr        // level 1 data cache
+    isb
+    mrs     x1, ccsidr_el1
+    and     x2, x1, #7
+    ubfx    x4, x1, #3, #10        // x4 = max way index
+    ubfx    x7, x1, #13, #15       // x7 = max set index
+    add     x2, x2, #4             // x2 = log2(line size): the set shift
+    clz     w5, w4                 // w5 = the way shift
+    mov     x6, #1
+    mov     x3, #1
+    lsl     x6, x6, x5             // x6 = way step
+    lsl     x4, x4, x5             // x4 = top way field
+    lsl     x3, x3, x2             // x3 = set step
+    lsl     x7, x7, x2             // x7 = top set field
+6:  mov     x9, x4                 // x9 = way field
+7:  orr     x11, x7, x9            // set | way
+    dc      cisw, x11
+    subs    x9, x9, x6
+    b.ge    7b
+    subs    x7, x7, x3
+    b.ge    6b
+    dsb     sy
+    b       secondary_trampoline   // re-park (does not return here)
 1:  eret
 
 // Clean and invalidate the entire data cache to the point of coherence, so a
