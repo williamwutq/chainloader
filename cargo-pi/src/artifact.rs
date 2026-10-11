@@ -37,6 +37,27 @@ pub(crate) fn build(cfg: &Config) -> Result<Image> {
     };
     let data = std::fs::read(&exe).map_err(|e| format!("reading {}: {e}", exe.display()))?;
 
+    // Refuse an image that cannot be what was built: linker output on some
+    // volumes (e.g. ExFAT via macOS fskit) has read back as all zeros, and
+    // booting that hangs the board until a power cycle.
+    if data.iter().all(|&b| b == 0) {
+        return Err(format!(
+            "{} is all zeros ({} bytes): a zeroed write? Rebuild it before loading.",
+            exe.display(),
+            data.len()
+        )
+        .into());
+    }
+    // `cargo build` always produces an ELF, so anything else is damaged
+    // output (a raw image is only taken through --image).
+    if cfg.image.is_none() && !is_elf(&data) {
+        return Err(format!(
+            "{} is not an ELF (bad magic): damaged build output? Rebuild it before loading.",
+            exe.display()
+        )
+        .into());
+    }
+
     let (load_addr, entry_off, mem_len, bytes) = if is_elf(&data) {
         let (base, entry, mem_len, image) = flatten_elf(&data)?;
         if cfg.load_addr != crate::config::DEFAULT_LOAD_ADDR && cfg.load_addr != base {
