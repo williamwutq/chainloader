@@ -245,6 +245,114 @@ the loader from drifting into a general firmware-services layer.
   and revisit if it bites.
 
 
+## `host-jump` — boot a resident image without re-transferring
+
+**Crate:** workspace (`chainloader-protocol` frame, `chainloader-loader` handler,
+`cargo-pi` `jump` subcommand).
+**Breaking change:** No — a new frame type; unknown types already return
+`ERROR(UnknownType)`, and support is advertised in the `READY` capability bits
+(see `image-patch`), so an old loader is detected rather than driven into garbage.
+**Depends on:** the shipped receive/validate/jump path; pairs with `image-patch`
+below.
+
+### Motivation
+
+`HEADER.entry_off` already lets a *fresh* load choose its entry PC, so jumping to
+an arbitrary offset of a just-transferred image needs nothing new. What is missing
+is re-entering the image **already resident in RAM** without sending it again. Over
+the ~11 KB/s UART, re-transferring a large kernel just to change where it starts —
+or to re-run it after an `image-patch` — dominates the iteration time. A `JUMP`
+command hands control to a chosen address under the full entry contract while the
+bytes stay put, turning the transfer into a one-time cost.
+
+### Design
+
+New frame `JUMP` (host → Pi), payload `entry: u64` — the physical entry address,
+which must lie inside the **resident image** `[load_addr, load_addr + mem_len)`;
+anything outside returns `ERROR(AddrOutOfRange)`. Re-entering only the image the
+loader actually loaded — never an arbitrary address — is deliberate: a
+jump-to-anywhere command is a footgun, whereas these bytes the loader loaded and
+verified, knows the exact extent of, and has already checked never overlap itself,
+so every entry-contract guarantee still holds. `JUMP` requires a resident,
+previously-verified image; with none it returns `ERROR(NoImage)`.
+
+`JUMP` reuses the exact boot handoff — EL1 drop, FP/SIMD enable, `DAIF` masked, the
+`x0`–`x10` register block (identical to the last `BOOT`: same window, DTB,
+`core_freq`, `periph_base`, release mailbox), GPR/SIMD scrub, quiesce-secondaries,
+and a cache clean/invalidate over the known resident extent — with one deliberate
+difference: it does **not** re-zero the BSS tail. `BOOT` zero-fills
+`[image_len, mem_len)` and re-verifies the image CRC to start a freshly-transferred
+image clean; `JUMP` re-enters memory *as it currently sits*, preserving
+`image-patch` edits, which is precisely the point of a patch/re-boot loop. That
+single behavioral split is why `JUMP` is a distinct command rather than "`BOOT`
+with an entry field." The resident bytes are taken to be whatever was loaded and
+patched: payloads are assumed not to be self-modifying, so the loader does not
+guard against a prior run having rewritten its own code.
+
+### Open questions
+
+- **Address representation.** An absolute `entry: u64` (bounded to the resident
+  extent) matches how the handoff expresses PCs and addresses elsewhere; an
+  `entry_off: u32` from `load_addr` mirrors `HEADER.entry_off` and is inherently
+  bounded by `offset < mem_len`. Leaning absolute, for handoff consistency.
+- **Descriptor update.** Whether a `JUMP` rewrites the retained image descriptor
+  (so a later patch/jump targets the new entry) or leaves it tied to the last real
+  load. Leaning: leave it tied to the load.
+
+## `image-patch` — patch the resident image in place before re-boot
+
+**Crate:** workspace (`chainloader-protocol` frame, `chainloader-loader` handler,
+`cargo-pi` `patch` subcommand).
+**Breaking change:** No — additive frame + a `READY` capability bit (below).
+**Depends on:** the shipped receive/validate path; the retained image descriptor;
+pairs with `host-jump` above.
+
+### Motivation
+
+Iterating on a kernel today means rebuild → flatten → re-transfer the *whole*
+image, even to flip one config byte or patch one instruction — and the whole image
+crawls over the UART every time. If the loader keeps the last image resident, the
+host can instead overwrite only the changed bytes and re-enter via `host-jump`,
+making the edit cost proportional to the *delta*, not the image. The strong use is
+a fast experiment loop (poke a flag, patch an instruction, re-run); a secondary use
+is parameterizing one resident base image across many test runs.
+
+### Design
+
+New frame `PATCH` (host → Pi), shaped like `DATA`: `offset: u32` within the
+resident image followed by up to `max_chunk` bytes (`4 + len ≤ MAX_PAYLOAD`). The
+loader writes the bytes at `load_addr + offset`, bounded to `[0, mem_len)`
+(patching into the zero-filled BSS region is allowed) — `ERROR(AddrOutOfRange)`
+past the footprint. It is accepted only with a resident, previously-verified image
+and while idle; mid-transfer or with no image it returns `ERROR(Unexpected)` /
+`ERROR(NoImage)`. Each `PATCH` is frame-CRC-protected like any frame, so a
+corrupted patch is rejected on the wire.
+
+The subtle part is **end-to-end integrity**. The loader re-verifies `image_crc32`
+before honoring `BOOT`, so a silent patch would make the next `BOOT` fail
+`ERROR(ImageCrc)`. Rather than drop that invariant, a `PATCH` carries the host's
+expected whole-image CRC *after* the patch is applied; the loader writes the bytes,
+recomputes the CRC **over the entire resident image**, compares, and on match
+stores it as the new `image_crc32` (`ERROR(ImageCrc)` otherwise). The full scan is
+the point of verification — it re-reads every byte, so it catches corruption
+anywhere in the image, not only in the bytes the patch touched; a cheap incremental
+CRC update (adjusting the stored value for the known delta) tracks the expected
+value *without* reading the image back, so it is reserved for non-verifying CRC
+maintenance, never the verify itself. The guarantee "the resident image equals what
+the host intended" therefore survives patching, and both a later `BOOT`
+(re-verified, BSS re-zeroed) and a `JUMP` (as-is) stay valid. Support is advertised
+to the host in the repurposed `READY.reserved` field as capability bits,
+paralleling the `hvc-mailbox-services` `QUERY` handshake, so a host detects patch
+support rather than inferring it from an `UnknownType` error.
+
+### Open questions
+
+- **Capability advertisement.** Repurposing `READY.reserved` (currently `0`) as a
+  capability bitfield is additive and avoids a `PROTOCOL_VERSION` bump, since new
+  frame types are already rejected cleanly by old loaders. Confirm the bitfield is
+  where both this and `host-jump` announce themselves, versus bumping the version.
+
+
 ## `usb-transport` — USB CDC-ACM device transport on the OTG port
 
 **Crate:** `chainloader-loader` (plus a small `cargo-pi` touch-up).
